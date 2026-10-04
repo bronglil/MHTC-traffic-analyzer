@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+
+/* Vehicle-type series colours (reference categorical palette, fixed order),
+   region colours and chart chrome. Dark steps are selected, not inverted. */
+:root {
+  color-scheme: light;
+  --surface: #f6f6f4;
+  --surface-1: #fcfcfb;
+  --border: #e2e1dc;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e9e8e4;
+  --accent: #2a78d6;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: #111110;
+    --surface-1: #1a1a19;
+    --border: #2f2f2c;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --grid: #2a2a28;
+    --accent: #3987e5;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #111110;
+  --surface-1: #1a1a19;
+  --border: #2f2f2c;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e86;
+  --grid: #2a2a28;
+  --accent: #3987e5;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-1: var(--surface-1);
+  --color-line: var(--border);
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-ink-3: var(--text-muted);
+  --color-accent: var(--accent);
+}
+
+body {
+  background: var(--surface);
+  color: var(--text-primary);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.card {
+  @apply rounded-xl border border-line bg-surface-1;
+}
+.btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-line bg-surface-1 px-3 py-1.5 text-sm font-medium text-ink hover:bg-surface disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-primary {
+  @apply border-transparent bg-accent text-white hover:opacity-90 hover:bg-accent;
+}
+.btn-danger {
+  @apply text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40;
+}
+.input {
+  @apply w-full rounded-lg border border-line bg-surface-1 px-2.5 py-1.5 text-sm text-ink outline-none focus:border-accent;
+}
+.label {
+  @apply text-xs font-medium uppercase tracking-wide text-ink-3;
+}

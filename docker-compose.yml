@@ -1,0 +1,47 @@
+# Traffic Vision: PostgreSQL + API + background worker + web UI.
+#   docker compose up --build      ->  http://localhost:8080
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: traffic
+      POSTGRES_PASSWORD: traffic
+      POSTGRES_DB: traffic_vision
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic -d traffic_vision"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment: &backend-env
+      TV_DATABASE_URL: postgresql+psycopg://traffic:traffic@db:5432/traffic_vision
+      TV_DATA_DIR: /data
+      TV_EMBEDDED_WORKER: "false"
+      TV_CORS_ORIGINS: '["http://localhost:8080"]'
+      # TV_MODEL_PATH: mhtc-vehicles.pt        # custom detector in /data/models
+      # TV_CLASSIFIER_MODEL: mhtc-vehicle-cls.pt
+    volumes: [data:/data]
+    depends_on:
+      db: {condition: service_healthy}
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.workers.worker"]
+    environment: *backend-env
+    volumes: [data:/data]
+    depends_on:
+      db: {condition: service_healthy}
+    # Scale out with: docker compose up --scale worker=3
+    # GPU: add `deploy.resources.reservations.devices: [{capabilities: [gpu]}]`
+    # and build from a CUDA-enabled image.
+
+  web:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  data:

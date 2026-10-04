@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+import cv2
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, Response
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.db import get_db
+from app.models import Region, Video
+from app.pipeline.frames import VideoReadError, probe
+from app.schemas import RegionCreate, RegionOut, RegionUpdate, VideoDetail, VideoOut
+
+router = APIRouter(prefix="/api/videos", tags=["videos"])
+
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts"}
+CHUNK = 1024 * 1024
+
+
+def get_video_or_404(video_id: str, db: Session) -> Video:
+    video = db.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Video not found")
+    return video
+
+
+@router.post("", response_model=VideoOut, status_code=status.HTTP_201_CREATED)
+def upload_video(file: UploadFile = File(...), db: Session = Depends(get_db)) -> Video:
+    settings = get_settings()
+    name = Path(file.filename or "video").name
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Unsupported file type {ext!r}")
+
+    video = Video(original_name=name, stored_path="")
+    db.add(video)
+    db.flush()
+    dest = settings.upload_dir / f"{video.id}{ext}"
+    limit = settings.max_upload_mb * 1024 * 1024
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := file.file.read(CHUNK):
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File too large")
+                out.write(chunk)
+        info = probe(str(dest))
+    except VideoReadError as exc:
+        dest.unlink(missing_ok=True)
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        db.rollback()
+        raise
+
+    video.stored_path = str(dest)
+    video.size_bytes = size
+    video.width, video.height = info.width, info.height
+    video.fps, video.frame_count = info.fps, info.frame_count
+    video.duration_seconds = info.duration
+    db.commit()
+    return video
+
+
+@router.get("", response_model=list[VideoOut])
+def list_videos(db: Session = Depends(get_db)) -> list[Video]:
+    return list(db.scalars(select(Video).order_by(Video.created_at.desc())))
+
+
+@router.get("/{video_id}", response_model=VideoDetail)
+def get_video(video_id: str, db: Session = Depends(get_db)) -> Video:
+    return get_video_or_404(video_id, db)
+
+
+@router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_video(video_id: str, db: Session = Depends(get_db)) -> None:
+    video = get_video_or_404(video_id, db)
+    if any(a.status in ("queued", "running") for a in video.analyses):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Cancel running analyses before deleting the video")
+    files = [video.stored_path] + [a.annotated_video_path for a in video.analyses if a.annotated_video_path]
+    dirs = [get_settings().output_dir / a.id for a in video.analyses]
+    db.delete(video)
+    db.commit()
+    for f in files:
+        Path(f).unlink(missing_ok=True)
+    for d in dirs:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@router.get("/{video_id}/file")
+def stream_video(video_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    video = get_video_or_404(video_id, db)
+    return FileResponse(video.stored_path, filename=video.original_name, content_disposition_type="inline")
+
+
+@router.get("/{video_id}/frame")
+def frame_at(video_id: str, t: float = 0.0, max_width: int = 1280, db: Session = Depends(get_db)) -> Response:
+    """A decoded frame as JPEG. Lets the UI show any codec OpenCV can read, even
+    ones the browser cannot play (e.g. some AVI / H.265 files)."""
+    video = get_video_or_404(video_id, db)
+    cap = cv2.VideoCapture(video.stored_path)
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        target = max(0, int(t * fps))
+        if target:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ok, img = cap.read()
+    finally:
+        cap.release()
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No frame at that time")
+    h, w = img.shape[:2]
+    max_width = max(64, min(max_width, 3840))
+    if w > max_width:
+        img = cv2.resize(img, (max_width, int(h * max_width / w)), interpolation=cv2.INTER_AREA)
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+
+
+@router.get("/{video_id}/thumbnail")
+def thumbnail(video_id: str, db: Session = Depends(get_db)) -> Response:
+    video = get_video_or_404(video_id, db)
+    cap = cv2.VideoCapture(video.stored_path)
+    ok, img = cap.read()
+    cap.release()
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No frame available")
+    h, w = img.shape[:2]
+    scale = 320 / max(w, 1)
+    img = cv2.resize(img, (320, max(1, int(h * scale))))
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+
+
+# ----------------------------------------------------------------- regions
+@router.get("/{video_id}/regions", response_model=list[RegionOut])
+def list_regions(video_id: str, db: Session = Depends(get_db)) -> list[Region]:
+    return get_video_or_404(video_id, db).regions
+
+
+@router.post("/{video_id}/regions", response_model=RegionOut, status_code=status.HTTP_201_CREATED)
+def create_region(video_id: str, body: RegionCreate, db: Session = Depends(get_db)) -> Region:
+    get_video_or_404(video_id, db)
+    region = Region(video_id=video_id, **body.model_dump())
+    db.add(region)
+    db.commit()
+    return region
+
+
+def _get_region(video_id: str, region_id: str, db: Session) -> Region:
+    region = db.get(Region, region_id)
+    if region is None or region.video_id != video_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Region not found")
+    return region
+
+
+@router.patch("/{video_id}/regions/{region_id}", response_model=RegionOut)
+def update_region(video_id: str, region_id: str, body: RegionUpdate, db: Session = Depends(get_db)) -> Region:
+    region = _get_region(video_id, region_id, db)
+    changes = body.model_dump(exclude_unset=True)
+    # Re-validate the merged region so edits cannot produce invalid shapes.
+    try:
+        merged = RegionCreate(
+            name=changes.get("name", region.name),
+            kind=region.kind,
+            points=changes.get("points", region.points),
+            color=changes.get("color", region.color),
+            label_forward=changes.get("label_forward", region.label_forward),
+            label_backward=changes.get("label_backward", region.label_backward),
+        )
+    except ValidationError as exc:
+        raise HTTPException(422, jsonable_encoder(exc.errors())) from exc
+    for k, v in merged.model_dump().items():
+        setattr(region, k, v)
+    db.commit()
+    return region
+
+
+@router.delete("/{video_id}/regions/{region_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_region(video_id: str, region_id: str, db: Session = Depends(get_db)) -> None:
+    db.delete(_get_region(video_id, region_id, db))
+    db.commit()
+
