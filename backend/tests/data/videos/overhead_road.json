@@ -1,0 +1,219 @@
+{
+  "video": "overhead_road.mp4",
+  "source": "https://github.com/andrewssobral/bgslibrary (dataset/video.avi), re-encoded to H.264",
+  "license": "MIT (bgslibrary, Copyright (c) 2012-2024 Andrews Cordolino Sobral)",
+  "description": "Near-overhead fixed camera over a two-lane one-way road; 12.5 s, 640x360 @ 30 fps. Vehicles travel left to right (image east).",
+  "camera": "overhead",
+  "ground_truth_method": "Manual frame-by-frame review (every 12th frame plus spot checks).",
+  "vehicles": [
+    {
+      "id": 1,
+      "type": "car",
+      "colour": "silver",
+      "lane": "Lower lane",
+      "frames": [
+        58,
+        130
+      ]
+    },
+    {
+      "id": 2,
+      "type": "car",
+      "colour": "white",
+      "lane": "Upper lane",
+      "frames": [
+        104,
+        175
+      ]
+    },
+    {
+      "id": 3,
+      "type": "car",
+      "colour": "red",
+      "lane": "Lower lane",
+      "frames": [
+        118,
+        182
+      ]
+    },
+    {
+      "id": 4,
+      "type": "car",
+      "colour": "teal",
+      "lane": "Upper lane",
+      "frames": [
+        196,
+        255
+      ]
+    },
+    {
+      "id": 5,
+      "type": "car",
+      "colour": "black",
+      "lane": "Upper lane",
+      "frames": [
+        289,
+        355
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "id": "road",
+      "name": "Road",
+      "kind": "polygon",
+      "points": [
+        [
+          0,
+          0.08
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.5
+        ],
+        [
+          0,
+          0.95
+        ]
+      ]
+    },
+    {
+      "id": "upper",
+      "name": "Upper lane",
+      "kind": "polygon",
+      "points": [
+        [
+          0,
+          0.08
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          0.36
+        ],
+        [
+          0,
+          0.56
+        ]
+      ]
+    },
+    {
+      "id": "lower",
+      "name": "Lower lane",
+      "kind": "polygon",
+      "points": [
+        [
+          0,
+          0.56
+        ],
+        [
+          1,
+          0.36
+        ],
+        [
+          1,
+          0.5
+        ],
+        [
+          0,
+          0.95
+        ]
+      ]
+    },
+    {
+      "id": "gate",
+      "name": "Gate",
+      "kind": "line",
+      "points": [
+        [
+          0.5,
+          0
+        ],
+        [
+          0.5,
+          1
+        ]
+      ],
+      "label_forward": "westbound",
+      "label_backward": "eastbound"
+    }
+  ],
+  "expected": {
+    "areas": {
+      "Road": 5,
+      "Upper lane": 3,
+      "Lower lane": 2
+    },
+    "lines": {
+      "Gate": {
+        "eastbound": 5
+      }
+    },
+    "directions": {
+      "Road": {
+        "E": 5
+      }
+    },
+    "types": {
+      "Road": {
+        "car": 5
+      }
+    }
+  },
+  "configs": [
+    {
+      "name": "motion",
+      "detector": "motion",
+      "classification": "detector",
+      "anchor": "center",
+      "trackers": [
+        "bytetrack",
+        "botsort",
+        "iou"
+      ],
+      "strides": [
+        1,
+        2
+      ],
+      "tolerance": 0
+    },
+    {
+      "name": "motion-stride3",
+      "detector": "motion",
+      "classification": "detector",
+      "anchor": "center",
+      "trackers": [
+        "bytetrack",
+        "botsort",
+        "iou"
+      ],
+      "strides": [
+        3
+      ],
+      "tolerance": 1,
+      "note": "Every 3rd frame: fast vehicles can lose their track right at the line, so allow ±1."
+    },
+    {
+      "name": "yolo11n-coco",
+      "detector": "yolo",
+      "model": "yolo11n.pt",
+      "classification": "size",
+      "anchor": "center",
+      "trackers": [
+        "bytetrack"
+      ],
+      "strides": [
+        1
+      ],
+      "tolerance": 0,
+      "known_limitation": "COCO-trained YOLO labels cars seen from directly above as airplane/tv/suitcase, so almost nothing is counted. Overhead cameras need a model trained on overhead footage (see docs/vehicle-classification.md) or the motion detector."
+    }
+  ]
+}

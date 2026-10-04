@@ -1,0 +1,14 @@
+[project]
+name = "traffic-vision"
+version = "0.1.0"
+description = "Video-based vehicle detection, tracking, counting and traffic analysis"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["model: needs YOLO weights (downloaded on first use); deselect with -m \"not model\""]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

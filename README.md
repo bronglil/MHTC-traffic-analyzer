@@ -1,123 +1,155 @@
-# MHTC-traffic-analyzer
-
 # Traffic Vision
 
-**Traffic Vision** is a video-based vehicle detection, tracking, counting, and traffic-analysis platform.
+**Traffic Vision** is a video-based vehicle detection, tracking, counting and
+traffic-analysis platform. You upload a traffic video, draw areas and counting
+lines, choose vehicle types, and get unique-vehicle counts by **area**, **vehicle
+type**, **direction** and **time period**. Results export as CSV, XLSX or JSON,
+and you can also generate an annotated video.
 
-The system allows users to upload traffic videos, configure analysis areas, select vehicle types, detect and track vehicles, count unique vehicles, analyze movement direction, and export structured traffic results.
+## Features
 
-## Core Features
+- Upload, play back and scrub traffic videos. Codecs the browser can't play are
+  shown as frames decoded on the server.
+- **Whole Frame** analysis, used automatically when no area is drawn, plus any
+  number of **named polygon ROIs** analysed at the same time.
+- **Counting lines / gates** with named directions (e.g. "northbound" /
+  "southbound").
+- Vehicle types: **Car, LGV1 (small van), LGV2 (large van), Truck/HGV,
+  Bus/Coach, Motorcycle, Bicycle**. See
+  [docs/vehicle-classification.md](docs/vehicle-classification.md).
+- Detection with **YOLO** (any Ultralytics model, including custom-trained
+  ones), or a **motion detector** for fixed overhead cameras.
+- Tracking with **ByteTrack** or **BoT-SORT**. Persistent track IDs mean each
+  vehicle is counted **once per area and once per line**.
+- **Per-track classification** stage: size rules or a custom crop classifier
+  split vans into LGV1/LGV2 and correct mislabelled large vans.
+- **Direction of travel** (8-way compass in image space) per area, and
+  crossing direction per line.
+- **Live progress** over WebSocket, with live provisional counts.
+- **Pipeline-stage view**: six panels side by side, updated live while
+  processing, showing what each step sees (frame → detection → tracking →
+  classification → ROI → counting). The same view can be exported as a 3×2
+  "pipeline" video.
+- Results dashboard with exports: **CSV**, a zip of all CSV tables, **XLSX**
+  (one sheet per table) and **JSON**.
+- Optional **annotated video**: boxes, class, track ID, ROIs, lines, direction
+  and running counts.
 
-* Upload and analyze traffic videos.
-* Automatically use the **entire video frame** when no custom area is selected.
-* Draw and configure multiple polygon-based ROIs.
-* Give each ROI a custom name.
-* Analyze **Whole Frame + multiple custom areas simultaneously**.
-* Select vehicle types using checkboxes:
-
-  * Car
-  * Van
-  * Truck
-  * Bus
-  * Motorcycle
-  * Bicycle
-* Detect vehicles using YOLO.
-* Track vehicles using ByteTrack or BoT-SORT.
-* Prevent duplicate vehicle counting using persistent tracking IDs.
-* Support optional counting lines/gates.
-* Detect vehicle movement direction.
-* Generate results by:
-
-  * Area
-  * Vehicle type
-  * Direction
-  * Time period
-* Display processing progress and analysis results.
-* Export results as:
-
-  * CSV
-  * XLSX
-  * JSON
-* Optionally generate annotated videos containing:
-
-  * Bounding boxes
-  * Vehicle class
-  * Tracking IDs
-  * ROI boundaries
-  * Counting lines
-  * Direction
-  * Current counts
-
-## Processing Pipeline
+## Processing pipeline
 
 ```text
 Video
-  ↓
-Frame Extraction
-  ↓
-Vehicle Detection
-  ↓
-Vehicle Tracking
-  ↓
-ROI / Whole-Frame Analysis
-  ↓
-Counting & Direction Detection
-  ↓
-Results
-  ↓
-CSV / XLSX / JSON / Annotated Video
+  ↓  Frame extraction          app/pipeline/frames.py
+  ↓  Vehicle detection         app/pipeline/detector.py      (YOLO | motion)
+  ↓  Vehicle tracking          app/pipeline/tracker.py       (ByteTrack | BoT-SORT | IoU)
+  ↓  Vehicle classification    app/pipeline/classifier.py    (size rules | crop classifier)
+  ↓  ROI / whole-frame analysis app/analysis/analyzer.py
+  ↓  Counting & direction      app/analysis/analyzer.py
+  ↓  Results                   app/reporting/aggregate.py
+  ↓  CSV / XLSX / JSON / video app/reporting/exporters.py, app/pipeline/annotate.py
 ```
 
-## Technology Stack
+Each stage only consumes the previous stage's output, so any stage can be
+swapped out (a new detector, a GPU tracker, a different classifier) without
+touching the others. The same vehicle across many frames is one **track**. A
+track is counted once in each area it spends at least `min_seconds_in_zone`
+in, and once on each line it crosses. One vehicle can therefore legitimately
+appear in "Whole Frame", "Lane 1" and "Gate A", but never twice in the same
+one.
 
-### Frontend
+## Architecture
 
-* React
-* TypeScript
-* Tailwind CSS
-* HTML5 Video
-* Canvas/Konva.js or Fabric.js
+| Layer | Technology |
+|---|---|
+| Frontend | React 19, TypeScript, Tailwind CSS 4, HTML5 video, Konva (ROI editor), Vite |
+| API | Python, FastAPI, WebSockets |
+| Computer vision | OpenCV, Ultralytics YOLO, ByteTrack / BoT-SORT |
+| Database | PostgreSQL (SQLite for local development and tests) |
+| Processing | Background workers (embedded thread, or separate processes using `SKIP LOCKED` job claiming); CPU or GPU |
 
-### Backend
+Jobs are rows in the `analyses` table. Workers claim queued jobs, write
+progress and the latest stage snapshots, then store per-vehicle records
+(`zone_counts`, `line_crossings`) and a summary. Each analysis keeps a snapshot
+of its settings and ROIs, so editing ROIs later never changes past results.
 
-* Python
-* FastAPI
-* OpenCV
+## Quick start (Docker)
 
-### Computer Vision
+```bash
+docker compose up --build
+# open http://localhost:8080
+```
 
-* YOLO
-* ByteTrack / BoT-SORT
+This starts PostgreSQL, the API, a worker (`--scale worker=N` for more) and
+the web UI. YOLO weights download automatically on first use. Put custom
+weights in the `data` volume under `/data/models/`.
 
-### Database
+## Local development
 
-* PostgreSQL
+```bash
+# Backend (Python 3.11+)
+cd backend
+pip install -r requirements-dev.txt
+uvicorn app.main:app --reload          # http://localhost:8000/docs; uses SQLite + an embedded worker
 
-### Processing
+# Frontend
+cd frontend
+npm install
+npm run dev                            # http://localhost:5173 (proxies /api to :8000)
+```
 
-* Background workers
-* CPU/GPU support
-* WebSocket-based progress updates
+Configuration is via `TV_*` environment variables (see `backend/app/config.py`):
+`TV_DATABASE_URL`, `TV_DATA_DIR`, `TV_MODEL_PATH`, `TV_CLASSIFIER_MODEL`,
+`TV_DEVICE` (`cpu`, `cuda:0`, `mps`), `TV_EMBEDDED_WORKER`.
 
-## Key Design Principle
+## Tests
 
-The system separates:
+```bash
+cd backend
+pytest                      # everything, including the real-video tests (downloads yolo11n.pt once)
+pytest -m "not model"       # skip the tests that need YOLO weights
+```
 
-**Detection → Tracking → ROI Analysis → Counting → Reporting**
+- `tests/test_analyzer.py`: counting rules (once per zone, re-entry, flicker,
+  majority-vote type, lines, direction).
+- `tests/test_classifier.py`: class aliases, perspective-normalised LGV1/LGV2
+  size rules, crop-classifier voting.
+- `tests/test_pipeline.py`: the end-to-end pipeline on a synthetic video with
+  all three trackers, stage previews, pipeline video and exports.
+- `tests/test_api.py`: upload → ROIs → analysis → WebSocket → exports.
+- `tests/test_real_videos.py`: **real footage with hand-counted ground truth**
+  (`tests/data/videos/`):
+  - `overhead_road.mp4` (MIT): 5 cars over two lanes and a gate. The motion
+    detector matches the ground truth exactly with every tracker. COCO YOLO is
+    recorded as a known limitation for overhead views.
+  - `oblique_car_park.mp4` (CC BY 4.0): 2 cars and 2 cyclists among
+    pedestrians. YOLO11n + ByteTrack matches the counts, types and directions
+    exactly.
 
-This ensures that the same vehicle appearing across many video frames is treated as **one vehicle**, while the same vehicle can legitimately be counted separately when it participates in different configured areas or counting events.
+  Add your own survey clips (e.g. with LGV1/LGV2 ground truth) by dropping a
+  video and a JSON file into that folder. See
+  [docs/vehicle-classification.md](docs/vehicle-classification.md#proving-accuracy-ground-truth-clips).
 
-## MVP
+## API overview
 
-The first version should support:
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/videos` | Upload a video (multipart) |
+| `GET` | `/api/videos`, `/api/videos/{id}` | List, or get a video with its regions |
+| `GET` | `/api/videos/{id}/file`, `/frame?t=` | Stream the video; one decoded frame |
+| `POST/PATCH/DELETE` | `/api/videos/{id}/regions[/{rid}]` | Create, rename, edit or delete ROIs and lines |
+| `POST` | `/api/videos/{id}/analyses` | Start an analysis (vehicle types, detector, tracker, classification…) |
+| `GET` | `/api/analyses/{id}` | Status and summary |
+| `WS` | `/api/analyses/{id}/ws` | Live progress and counts |
+| `GET` | `/api/analyses/{id}/stages` | Latest pipeline-stage images |
+| `GET` | `/api/analyses/{id}/export?format=csv\|csv_bundle\|xlsx\|json` | Download results |
+| `GET` | `/api/analyses/{id}/annotated-video` | Annotated or pipeline video |
+| `POST` | `/api/analyses/{id}/cancel` | Cancel |
 
-1. Video upload.
-2. Video playback.
-3. Whole-frame analysis.
-4. Multiple polygon ROIs.
-5. ROI naming and editing.
-6. Vehicle-type selection.
-7. YOLO detection.
-8. Vehicle tracking.
-9. Unique vehicle counting.
-10. Basi
+Interactive docs are at `/docs` when the API is running.
+
+## Roadmap
+
+The architecture is designed to extend to speed estimation (homography
+calibration on the existing tracks), multiple cameras, OGV1/OGV2 and other
+classification schemes, cloud or GPU worker pools, and scheduled automated
+reporting.

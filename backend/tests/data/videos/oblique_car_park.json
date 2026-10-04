@@ -1,0 +1,84 @@
+{
+  "video": "oblique_car_park.mp4",
+  "source": "https://github.com/intel-iot-devkit/sample-videos (person-bicycle-car-detection.mp4), scaled to 640x360 and re-encoded to H.264",
+  "license": "CC BY 4.0 (Intel Corporation, intel-iot-devkit/sample-videos)",
+  "description": "High oblique fixed camera over a car park; 54 s, 640x360 @ 12 fps. Two cars drive through towards the upper left; two cyclists ride left to right; pedestrians walk through (must not be counted).",
+  "camera": "oblique",
+  "ground_truth_method": "Manual frame-by-frame review (every 18th frame plus spot checks).",
+  "vehicles": [
+    {
+      "id": 1,
+      "type": "car",
+      "colour": "white",
+      "frames": [
+        178,
+        234
+      ],
+      "heading": "NW"
+    },
+    {
+      "id": 2,
+      "type": "bicycle",
+      "frames": [
+        300,
+        360
+      ],
+      "heading": "E"
+    },
+    {
+      "id": 3,
+      "type": "car",
+      "colour": "silver",
+      "frames": [
+        530,
+        595
+      ],
+      "heading": "NW"
+    },
+    {
+      "id": 4,
+      "type": "bicycle",
+      "frames": [
+        540,
+        615
+      ],
+      "heading": "E"
+    }
+  ],
+  "regions": [],
+  "expected": {
+    "areas": {
+      "Whole Frame": 4
+    },
+    "directions": {
+      "Whole Frame": {
+        "NW": 2,
+        "E": 2
+      }
+    },
+    "types": {
+      "Whole Frame": {
+        "car": 2,
+        "bicycle": 2
+      }
+    }
+  },
+  "configs": [
+    {
+      "name": "yolo11n-coco",
+      "detector": "yolo",
+      "model": "yolo11n.pt",
+      "classification": "size",
+      "anchor": "bottom_center",
+      "trackers": [
+        "bytetrack",
+        "botsort"
+      ],
+      "strides": [
+        1
+      ],
+      "tolerance": 0,
+      "note": "Stride 1 only: this clip is 12 fps, so every 2nd frame (6 fps) splits fast-turning cars into two tracks."
+    }
+  ]
+}
