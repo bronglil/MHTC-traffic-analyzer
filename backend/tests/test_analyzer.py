@@ -92,3 +92,17 @@ def test_track_expiry_finalizes():
         a.update(f, f, [])
     assert len(a.zone_counts) == 1  # finalized before finish()
     assert a.live_counts() == {WHOLE_FRAME_ZONE_ID: 1}
+
+
+def test_live_breakdown_includes_active_tracks():
+    line = LineSpec("gate", "Gate", (50, 0), (50, 100), "westbound", "eastbound")
+    a = TrafficAnalyzer((100, 100), [WHOLE, LEFT], [line], track_timeout_frames=3)
+    for f in range(8):  # track 1 finishes (east, crosses gate)
+        a.update(f, f, [obj(1, 20 + f * 8, 50)])
+    for f in range(8, 14):  # track 1 expires; track 2 (bus) still active in the left half
+        a.update(f, f, [obj(2, 10, 30 + (f - 8) * 8, "bus")])
+    live = a.live_breakdown()
+    assert live[WHOLE_FRAME_ZONE_ID] == {"total": 2, "by_type": {"car": 1, "bus": 1}, "by_direction": {"E": 1, "S": 1}}
+    assert live["left"]["by_type"] == {"car": 1, "bus": 1}
+    assert live["gate"] == {"total": 1, "by_type": {"car": 1}, "by_direction": {"eastbound": 1}}
+    assert a.live_counts() == {WHOLE_FRAME_ZONE_ID: 2, "left": 2, "gate": 1}

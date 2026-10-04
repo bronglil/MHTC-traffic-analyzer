@@ -14,7 +14,9 @@ import {
   type RegionKind,
   type VideoDetail,
 } from "../lib/api";
-import { VEHICLE_HINTS, VEHICLE_LABELS, VEHICLE_TYPES, regionColor } from "../lib/vehicles";
+import CountsDrawer from "../components/CountsDrawer";
+import NameRegionDialog, { type RegionDetails } from "../components/NameRegionDialog";
+import { REGION_COLORS, VEHICLE_HINTS, VEHICLE_LABELS, VEHICLE_TYPES, regionColor } from "../lib/vehicles";
 
 const DEFAULT_SETTINGS: AnalysisSettings = {
   vehicle_types: [...VEHICLE_TYPES],
@@ -69,6 +71,15 @@ export default function WorkspacePage() {
     loadAnalyses();
   }, [videoId, loadAnalyses]);
 
+  // The counts drawer shows the most recent analysis of this video (full details incl. summary).
+  const [latest, setLatest] = useState<Analysis | null>(null);
+  const latestKey = analyses[0] ? `${analyses[0].id}:${analyses[0].status}:${analyses[0].progress}` : "";
+  useEffect(() => {
+    if (!analyses[0]) return setLatest(null);
+    api.getAnalysis(analyses[0].id).then(setLatest).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestKey]);
+
   // Keep the analyses list fresh while any job is active.
   useEffect(() => {
     if (!analyses.some((a) => a.status === "queued" || a.status === "running")) return;
@@ -76,19 +87,22 @@ export default function WorkspacePage() {
     return () => clearInterval(t);
   }, [analyses, loadAnalyses]);
 
-  const createRegion = async (kind: RegionKind, points: Point[]) => {
-    const n = regions.filter((r) => r.kind === kind).length + 1;
+  // A shape that has been drawn and is waiting for its name (popup open).
+  const [pending, setPending] = useState<{ kind: RegionKind; points: Point[] } | null>(null);
+  const nextColor = REGION_COLORS.find((c) => !regions.some((r) => r.color?.toLowerCase() === c)) ??
+    REGION_COLORS[regions.length % REGION_COLORS.length];
+
+  const saveRegion = async (details: RegionDetails) => {
+    if (!pending) return;
+    const { kind, points } = pending;
+    setPending(null);
+    const firstArea = kind === "polygon" && !regions.some((r) => r.kind === "polygon");
     try {
-      const r = await api.createRegion(videoId, {
-        name: kind === "polygon" ? `Area ${n}` : `Line ${n}`,
-        kind,
-        points,
-        label_forward: "A→B",
-        label_backward: "B→A",
-      });
+      const r = await api.createRegion(videoId, { kind, points, color: nextColor, ...details });
       setRegions((rs) => [...rs, r]);
       setSelectedId(r.id);
-      setMode("select");
+      // Once you pick specific roads, count only those (Whole Frame can be re-ticked).
+      if (firstArea) setSettings((s) => ({ ...s, include_whole_frame: false }));
     } catch (e) {
       fail(e);
     }
@@ -170,14 +184,18 @@ export default function WorkspacePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            <ModeButton active={mode === "rect"} onClick={() => { setMode("rect"); setSelectedId(null); }}>
+              ▭ Draw road (rectangle)
+            </ModeButton>
             <ModeButton active={mode === "select"} onClick={() => setMode("select")}>Select / edit</ModeButton>
             <ModeButton active={mode === "polygon"} onClick={() => { setMode("polygon"); setSelectedId(null); }}>
-              ⬠ Draw area
+              ⬠ Draw area (polygon)
             </ModeButton>
             <ModeButton active={mode === "line"} onClick={() => { setMode("line"); setSelectedId(null); }}>
               ╱ Draw counting line
             </ModeButton>
             <span className="text-xs text-ink-3">
+              {mode === "rect" && "Press and drag over a road you want to count, then name it"}
               {mode === "polygon" && "Click to add points · click first point, double-click or Enter to finish · Esc to cancel"}
               {mode === "line" && "Click the start point, then the end point · Esc to cancel"}
               {mode === "select" && "Click a shape to select · drag it or its points to edit · Delete to remove"}
@@ -197,7 +215,10 @@ export default function WorkspacePage() {
                 mode={mode}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                onCreate={createRegion}
+                onCreate={(kind, points) => {
+                  setPending({ kind, points });
+                  setMode("select");
+                }}
                 onChangePoints={(id, points) => patchRegion(id, { points })}
                 onCancelDraw={() => setMode("select")}
               />
@@ -381,6 +402,19 @@ export default function WorkspacePage() {
           </section>
         </aside>
       </div>
+      {latest && <CountsDrawer analysis={latest} />}
+      {pending && (
+        <NameRegionDialog
+          kind={pending.kind}
+          color={nextColor}
+          defaultName={pending.kind === "polygon"
+            ? `Road ${regions.filter((r) => r.kind === "polygon").length + 1}`
+            : `Line ${regions.filter((r) => r.kind === "line").length + 1}`}
+          existingNames={regions.map((r) => r.name)}
+          onSave={saveRegion}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }

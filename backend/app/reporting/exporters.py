@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -19,6 +20,8 @@ ZONE_COLUMNS = [
     "first_time", "last_time", "first_frame", "last_frame", "frames_in_zone", "mean_confidence",
 ]
 LINE_COLUMNS = ["line_id", "line_name", "track_id", "vehicle_type", "direction", "time", "frame"]
+MOVEMENT_COLUMNS = ["from_name", "to_name", "track_id", "vehicle_type", "start_time", "end_time",
+                    "start_frame", "end_frame"]
 
 
 def _summary_tables(summary: Mapping[str, Any]) -> dict[str, tuple[list[str], list[list[Any]]]]:
@@ -40,6 +43,9 @@ def _summary_tables(summary: Mapping[str, Any]) -> dict[str, tuple[list[str], li
                                 [[r["area"], r["direction"], r["count"]] for r in summary["by_area_direction"]]),
         "Line crossings by direction": (["line", "direction", "count"], line_rows),
         "By time period": (["source", "name", "period", "total", *types], time_rows),
+        "Movements (from-to)": (["from", "to", "total", *types],
+                                [[m["from"], m["to"], m["total"], *[m["by_type"].get(t, 0) for t in types]]
+                                 for m in summary.get("movements", [])]),
     }
 
 
@@ -55,22 +61,24 @@ def _records(records: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> li
     return [[r.get(c) for c in columns] for r in records]
 
 
-def to_json(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings) -> bytes:
+def to_json(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings, movements=()) -> bytes:
     return json.dumps(
-        {"analysis": meta, "summary": summary, "zone_counts": list(zone_counts), "line_crossings": list(line_crossings)},
+        {"analysis": meta, "summary": summary, "zone_counts": list(zone_counts), "line_crossings": list(line_crossings),
+         "movements": list(movements)},
         indent=2,
         default=str,
     ).encode()
 
 
-def to_csv_zip(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings) -> bytes:
+def to_csv_zip(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings, movements=()) -> bytes:
     """A zip of CSVs, one per table (a single CSV cannot hold several tables)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for title, (cols, rows) in _summary_tables(summary).items():
-            zf.writestr(title.lower().replace(" & ", "_").replace(" ", "_") + ".csv", _csv(cols, rows))
+            zf.writestr(re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") + ".csv", _csv(cols, rows))
         zf.writestr("vehicle_counts.csv", _csv(ZONE_COLUMNS, _records(zone_counts, ZONE_COLUMNS)))
         zf.writestr("line_crossings.csv", _csv(LINE_COLUMNS, _records(line_crossings, LINE_COLUMNS)))
+        zf.writestr("movement_events.csv", _csv(MOVEMENT_COLUMNS, _records(list(movements), MOVEMENT_COLUMNS)))
     return buf.getvalue()
 
 
@@ -79,7 +87,7 @@ def to_csv(zone_counts) -> bytes:
     return _csv(ZONE_COLUMNS, _records(list(zone_counts), ZONE_COLUMNS)).encode()
 
 
-def to_xlsx(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings) -> bytes:
+def to_xlsx(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, line_crossings, movements=()) -> bytes:
     wb = Workbook()
     info = wb.active
     info.title = "Analysis"
@@ -103,6 +111,7 @@ def to_xlsx(meta: Mapping[str, Any], summary: Mapping[str, Any], zone_counts, li
         sheet(title, cols, rows)
     sheet("Vehicle counts", ZONE_COLUMNS, _records(list(zone_counts), ZONE_COLUMNS))
     sheet("Line crossing events", LINE_COLUMNS, _records(list(line_crossings), LINE_COLUMNS))
+    sheet("Movement events", MOVEMENT_COLUMNS, _records(list(movements), MOVEMENT_COLUMNS))
 
     buf = io.BytesIO()
     wb.save(buf)

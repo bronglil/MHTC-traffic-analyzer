@@ -31,8 +31,9 @@ export function directionLabel(d: string): string {
   return names[d] ?? d;
 }
 
-/** Distinct, stable colours for user-drawn regions on the video overlay. */
-const REGION_COLORS = ["#f59e0b", "#06b6d4", "#a855f7", "#22c55e", "#ec4899", "#3b82f6", "#ef4444", "#84cc16"];
+/** Distinct colours for user-drawn roads/areas/lines — same list and order as backend app/colors.py. */
+export const REGION_COLORS = ["#f59e0b", "#06b6d4", "#a855f7", "#84cc16", "#ec4899", "#3b82f6", "#ef4444", "#14b8a6"];
+export const WHOLE_FRAME_COLOR = "#9ca3af";
 export function regionColor(index: number): string {
   return REGION_COLORS[index % REGION_COLORS.length];
 }

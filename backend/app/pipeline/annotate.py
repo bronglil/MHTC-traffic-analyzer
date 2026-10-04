@@ -24,18 +24,14 @@ import numpy as np
 
 from app.analysis.analyzer import LineSpec, TrafficAnalyzer, ZoneSpec
 from app.analysis.geometry import point_in_polygon
+from app.colors import REGION_COLORS, WHOLE_FRAME_COLOR, hex_to_bgr
 from app.pipeline.types import Detection, TrackedObject
 from app.vehicles import VEHICLE_LABELS
 
 
-def _hex_bgr(h: str) -> tuple[int, int, int]:
-    h = h.lstrip("#")
-    return int(h[4:6], 16), int(h[2:4], 16), int(h[0:2], 16)
-
-
 # Same fixed slot order as the dashboard's categorical palette.
 TYPE_COLORS = {
-    t: _hex_bgr(c)
+    t: hex_to_bgr(c)
     for t, c in {
         "car": "#2a78d6", "lgv1": "#eb6834", "lgv2": "#1baf7a", "truck": "#eda100",
         "bus": "#e87ba4", "motorcycle": "#008300", "bicycle": "#4a3aa7", "van": "#9b9b9b",
@@ -56,9 +52,15 @@ STAGES: list[tuple[str, str]] = [
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
-def zone_color(i: int) -> tuple[int, int, int]:
-    r, g, b = colorsys.hsv_to_rgb((0.11 + i * 0.17) % 1.0, 0.8, 1.0)
-    return int(b * 255), int(g * 255), int(r * 255)
+def zone_color(zone: ZoneSpec, i: int) -> tuple[int, int, int]:
+    """The area's own colour (as chosen in the UI), else a palette slot."""
+    if zone.polygon is None:
+        return hex_to_bgr(WHOLE_FRAME_COLOR)
+    return hex_to_bgr(zone.color or REGION_COLORS[i % len(REGION_COLORS)])
+
+
+def line_color(line: LineSpec) -> tuple[int, int, int]:
+    return hex_to_bgr(line.color) if line.color else (0, 0, 255)
 
 
 def track_color(track_id: int) -> tuple[int, int, int]:
@@ -172,19 +174,19 @@ class StageRenderer:
         overlay = img.copy()
         for i, z in enumerate(self.zones):
             if z.polygon is not None:
-                cv2.fillPoly(overlay, [np.array(z.polygon, dtype=np.int32)], zone_color(i))
+                cv2.fillPoly(overlay, [np.array(z.polygon, dtype=np.int32)], zone_color(self.zones[i], i))
         cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
         for i, z in enumerate(self.zones):
             if z.polygon is None:
-                cv2.rectangle(img, (1, 1), (w - 2, h - 2), zone_color(i), 2)
+                cv2.rectangle(img, (1, 1), (w - 2, h - 2), zone_color(self.zones[i], i), 2)
                 continue
             pts = np.array(z.polygon, dtype=np.int32)
-            cv2.polylines(img, [pts], True, zone_color(i), 2, cv2.LINE_AA)
-            _label(img, z.name, int(pts[0][0]), int(pts[0][1]) + 18, zone_color(i))
+            cv2.polylines(img, [pts], True, zone_color(self.zones[i], i), 2, cv2.LINE_AA)
+            _label(img, z.name, int(pts[0][0]), int(pts[0][1]) + 18, zone_color(self.zones[i], i))
         for o in classified:
             p = self._pt(o)
             inside = [i for i, z in enumerate(self.zones) if z.polygon is not None and point_in_polygon(p, z.polygon)]
-            c = zone_color(inside[0]) if inside else (255, 255, 255)
+            c = zone_color(self.zones[inside[0]], inside[0]) if inside else (255, 255, 255)
             cv2.circle(img, (int(p[0]), int(p[1])), 6, c, -1)
             cv2.circle(img, (int(p[0]), int(p[1])), 6, (0, 0, 0), 1)
             names = ",".join(self.zones[i].name for i in inside) or "-"
@@ -195,8 +197,8 @@ class StageRenderer:
         img = image.copy()
         for ln in self.lines:
             a, b = (int(ln.a[0]), int(ln.a[1])), (int(ln.b[0]), int(ln.b[1]))
-            cv2.line(img, a, b, (0, 0, 255), 3, cv2.LINE_AA)
-            _label(img, ln.name, a[0], a[1] + 18, (0, 0, 255))
+            cv2.line(img, a, b, line_color(ln), 3, cv2.LINE_AA)
+            _label(img, ln.name, a[0], a[1] + 18, line_color(ln))
         for o in classified:
             trail = list(self._trails.get(o.track_id, ()))
             direction = analyzer.active_track_direction(o.track_id) or ""
@@ -204,11 +206,10 @@ class StageRenderer:
             if len(trail) >= 2:
                 cv2.arrowedLine(img, trail[0], trail[-1], c, 3, cv2.LINE_AA, tipLength=0.2)
             _label(img, f"#{o.track_id} {direction}", int(o.x1), int(o.y1), c)
-        live = analyzer.live_counts()
-        rows = [f"{z.name}: {live.get(z.id, 0)}" for z in self.zones]
-        rows += [f"{ln.name}: {live.get(ln.id, 0)}" for ln in self.lines]
-        _panel_text(img, rows)
+        self._counts_panel(img, analyzer)
         out["counting"] = img
+        # Not part of the 3x2 grid: the single annotated view shown large in the UI.
+        out["live"] = self.overlay(image, classified, analyzer)
         return out
 
     def overlay(self, image: np.ndarray, classified: Sequence[TrackedObject], analyzer: TrafficAnalyzer) -> np.ndarray:
@@ -217,27 +218,53 @@ class StageRenderer:
         overlay = img.copy()
         for i, z in enumerate(self.zones):
             if z.polygon is not None:
-                cv2.fillPoly(overlay, [np.array(z.polygon, dtype=np.int32)], zone_color(i))
+                cv2.fillPoly(overlay, [np.array(z.polygon, dtype=np.int32)], zone_color(self.zones[i], i))
         cv2.addWeighted(overlay, 0.15, img, 0.85, 0, img)
         for i, z in enumerate(self.zones):
             if z.polygon is not None:
                 pts = np.array(z.polygon, dtype=np.int32)
-                cv2.polylines(img, [pts], True, zone_color(i), 2, cv2.LINE_AA)
-                _label(img, z.name, int(pts[0][0]), int(pts[0][1]) + 18, zone_color(i))
+                cv2.polylines(img, [pts], True, zone_color(self.zones[i], i), 2, cv2.LINE_AA)
+                _label(img, z.name, int(pts[0][0]), int(pts[0][1]) + 18, zone_color(self.zones[i], i))
         for ln in self.lines:
             a, b = (int(ln.a[0]), int(ln.a[1])), (int(ln.b[0]), int(ln.b[1]))
-            cv2.line(img, a, b, (0, 0, 255), 3, cv2.LINE_AA)
-            _label(img, ln.name, a[0], a[1] + 18, (0, 0, 255))
+            cv2.line(img, a, b, line_color(ln), 3, cv2.LINE_AA)
+            _label(img, ln.name, a[0], a[1] + 18, line_color(ln))
         for o in classified:
             vtype = analyzer.active_track_type(o.track_id) or o.vehicle_type
             c = TYPE_COLORS.get(vtype, (255, 255, 255))
             cv2.rectangle(img, (int(o.x1), int(o.y1)), (int(o.x2), int(o.y2)), c, 2)
             direction = analyzer.active_track_direction(o.track_id) or ""
             _label(img, f"#{o.track_id} {SHORT_LABELS.get(vtype, vtype)} {direction}".strip(), int(o.x1), int(o.y1), c)
-        live = analyzer.live_counts()
-        _panel_text(img, [f"{z.name}: {live.get(z.id, 0)}" for z in self.zones]
-                    + [f"{ln.name}: {live.get(ln.id, 0)}" for ln in self.lines])
+            p = self._pt(o)
+            inside = [i for i, z in enumerate(self.zones) if z.polygon is not None and point_in_polygon(p, z.polygon)]
+            if inside:
+                cv2.circle(img, (int(p[0]), int(p[1])), 5, zone_color(self.zones[inside[0]], inside[0]), -1)
+        self._counts_panel(img, analyzer)
         return img
+
+    def _counts_panel(self, img: np.ndarray, analyzer: TrafficAnalyzer) -> None:
+        """Running totals per area/line with a colour swatch and per-type breakdown."""
+        live = analyzer.live_breakdown()
+        rows: list[tuple[tuple[int, int, int], str]] = []
+        for i, z in enumerate(self.zones):
+            b = live.get(z.id, {"total": 0, "by_type": {}})
+            types = " ".join(f"{SHORT_LABELS.get(t, t)} {n}" for t, n in sorted(b["by_type"].items()))
+            rows.append((zone_color(z, i), f"{z.name}: {b['total']}" + (f"  ({types})" if types else "")))
+        for ln in self.lines:
+            b = live.get(ln.id, {"total": 0, "by_direction": {}})
+            dirs = " ".join(f"{d} {n}" for d, n in sorted(b.get("by_direction", {}).items()))
+            rows.append((line_color(ln), f"{ln.name}: {b['total']}" + (f"  ({dirs})" if dirs else "")))
+        if not rows:
+            return
+        scale, line_h = 0.5, 22
+        w = max(cv2.getTextSize(t, FONT, scale, 1)[0][0] for _, t in rows) + 34
+        overlay = img.copy()
+        cv2.rectangle(overlay, (6, 6), (6 + w, 12 + line_h * len(rows)), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.65, img, 0.35, 0, img)
+        for i, (color, text) in enumerate(rows):
+            y = 6 + line_h * (i + 1)
+            cv2.rectangle(img, (13, y - 11), (25, y + 1), color, -1)
+            cv2.putText(img, text, (31, y), FONT, scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def compose_grid(stages: dict[str, np.ndarray], tile_size: tuple[int, int]) -> np.ndarray:

@@ -13,6 +13,11 @@ records. Counting rules:
   All records for a track share that resolved type.
 * The same vehicle legitimately appears in several zones/lines: each is an
   independent counting event.
+* **Movements** (origin → destination, e.g. turning counts at a junction):
+  areas can be marked as roads with a role — ``in`` (vehicles enter the scene
+  through it), ``out`` (vehicles leave through it) or ``both``. A track that
+  is seen in an in-road and *later* in a different out-road is counted once as
+  a movement from the earliest in-road to the last out-road it visited.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from app.pipeline.types import TrackedObject
 WHOLE_FRAME_ZONE_ID = "whole_frame"
 STATIONARY = "stationary"
 ANCHORS = ("bottom_center", "center")
+# Area roles for movement (origin -> destination) counting.
+ROLES = ("count", "in", "out", "both")
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,8 @@ class ZoneSpec:
     id: str
     name: str
     polygon: tuple[Point, ...] | None  # pixel coordinates; None = whole frame
+    color: str | None = None  # "#rrggbb" display colour
+    role: str = "count"  # count | in | out | both (see ROLES)
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,8 @@ class LineSpec:
     # Labels for crossing from the left side of a->b to the right side and back.
     label_forward: str = "A→B"
     label_backward: str = "B→A"
+    color: str | None = None
+
 
 
 @dataclass
@@ -77,6 +88,22 @@ class LineCrossing:
     direction: str
     frame: int
     time: float
+
+
+@dataclass
+class Movement:
+    """One vehicle travelling from an in-road to a different out-road."""
+
+    from_id: str
+    from_name: str
+    to_id: str
+    to_name: str
+    track_id: int
+    vehicle_type: str
+    start_frame: int
+    end_frame: int
+    start_time: float
+    end_time: float
 
 
 @dataclass
@@ -147,6 +174,8 @@ class TrafficAnalyzer:
         self._tracks: dict[int, _TrackState] = {}
         self.zone_counts: list[ZoneCount] = []
         self.line_crossings: list[LineCrossing] = []
+        self.movements: list[Movement] = []
+        self._zone_by_id = {z.id: z for z in self.zones}
 
     # ------------------------------------------------------------------ update
     def update(self, frame_index: int, timestamp: float, objects: Iterable[TrackedObject]) -> None:
@@ -234,6 +263,13 @@ class TrafficAnalyzer:
                     mean_confidence=round(st.mean_confidence, 4),
                 )
             )
+        mv = self._movement(st)
+        if mv is not None:
+            (o, ov), (d, dv) = mv
+            self.movements.append(
+                Movement(o.id, o.name, d.id, d.name, st.track_id, vtype,
+                         ov.first_frame, dv.last_frame, ov.first_time, dv.last_time)
+            )
         line_by_id = {ln.id: ln for ln in self.lines}
         for line_id, (frame, t, forward) in st.crossings.items():
             line = line_by_id[line_id]
@@ -249,23 +285,69 @@ class TrafficAnalyzer:
                 )
             )
 
+    def _movement(self, st: _TrackState):
+        """(origin zone, visit), (destination zone, visit) or None."""
+        visits = [
+            (self._zone_by_id[zid], v) for zid, v in st.visits.items()
+            if v.frames >= self.min_frames_in_zone and self._zone_by_id[zid].role != "count"
+            and self._zone_by_id[zid].polygon is not None
+        ]
+        origins = [zv for zv in visits if zv[0].role in ("in", "both")]
+        if not origins:
+            return None
+        origin = min(origins, key=lambda zv: zv[1].first_frame)
+        dests = [zv for zv in visits if zv[0].role in ("out", "both") and zv[0].id != origin[0].id
+                 and zv[1].last_frame > origin[1].first_frame and zv[1].first_frame > origin[1].first_frame]
+        if not dests:
+            return None
+        return origin, max(dests, key=lambda zv: zv[1].last_frame)
+
     # ------------------------------------------------------------- live state
-    def live_counts(self) -> dict[str, int]:
-        """Provisional per-zone/line totals including still-active tracks."""
-        counts: dict[str, int] = defaultdict(int)
+    def live_breakdown(self) -> dict[str, dict]:
+        """Provisional per-zone/line counts by vehicle type and direction,
+        including still-active tracks (using their current majority type)."""
+        out: dict[str, dict] = {}
+
+        def add(key: str, vtype: str, direction: str) -> None:
+            b = out.setdefault(key, {"total": 0, "by_type": defaultdict(int), "by_direction": defaultdict(int)})
+            b["total"] += 1
+            b["by_type"][vtype] += 1
+            b["by_direction"][direction] += 1
+
+        def add_movement(o: str, o_name: str, d: str, d_name: str, vtype: str) -> None:
+            key = f"mv:{o}>{d}"
+            b = out.setdefault(key, {"total": 0, "by_type": defaultdict(int), "by_direction": defaultdict(int),
+                                     "from": o_name, "to": d_name})
+            b["total"] += 1
+            b["by_type"][vtype] += 1
+
+        for m in self.movements:
+            add_movement(m.from_id, m.from_name, m.to_id, m.to_name, m.vehicle_type)
         for c in self.zone_counts:
-            counts[c.zone_id] += 1
+            add(c.zone_id, c.vehicle_type, c.direction)
         for lc in self.line_crossings:
-            counts[lc.line_id] += 1
+            add(lc.line_id, lc.vehicle_type, lc.direction)
+        line_by_id = {ln.id: ln for ln in self.lines}
         for st in self._tracks.values():
             if not st.hits or not self._accepts(st.vehicle_type):
                 continue
+            vtype = st.vehicle_type
             for zone_id, visit in st.visits.items():
                 if visit.frames >= self.min_frames_in_zone:
-                    counts[zone_id] += 1
-            for line_id in st.crossings:
-                counts[line_id] += 1
-        return dict(counts)
+                    add(zone_id, vtype, self._direction(visit.entry_point, visit.exit_point))
+            for line_id, (_, _, forward) in st.crossings.items():
+                ln = line_by_id[line_id]
+                add(line_id, vtype, ln.label_forward if forward else ln.label_backward)
+            mv = self._movement(st)
+            if mv is not None:
+                (o, _), (d, _) = mv
+                add_movement(o.id, o.name, d.id, d.name, vtype)
+        return {k: {**v, "by_type": dict(v["by_type"]), "by_direction": dict(v["by_direction"])}
+                for k, v in out.items()}
+
+    def live_counts(self) -> dict[str, int]:
+        """Provisional per-zone/line totals including still-active tracks."""
+        return {k: v["total"] for k, v in self.live_breakdown().items() if not k.startswith("mv:")}
 
     def active_track_type(self, track_id: int) -> str | None:
         st = self._tracks.get(track_id)

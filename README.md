@@ -35,6 +35,32 @@ and you can also generate an annotated video.
 - Optional **annotated video**: boxes, class, track ID, ROIs, lines, direction
   and running counts.
 
+## Counting specific roads
+
+If the camera shows several roads but you only want some of them:
+
+1. Choose **Draw road (rectangle)** and drag a box over each road you want to
+   count. Use **Draw area (polygon)** for curved or angled roads.
+2. A popup asks for a **name** for each one (e.g. "A40 inbound", "High
+   Street"). Names must be unique per video.
+3. Each road gets its own **colour**, used in the editor, the live view, the
+   annotated video, the counts tiles and the counts drawer.
+4. Once you draw a road, **Whole Frame** is switched off, so only your selected
+   roads are counted. Tick it again to also get a total for the whole picture.
+   Use the checkbox next to a road to leave it out of a run without deleting
+   it.
+
+Every vehicle passing through a selected road is counted in that road, split
+by vehicle type and direction. The same vehicle can appear in two roads (for
+example, if it turns from one into the other), and it counts once in each.
+While an analysis runs, the **Counts** tab on the right edge of the screen
+opens a drawer with live per-road counts by vehicle type, and it shows the
+final counts afterwards.
+
+*(Optional, API only)* Areas also take a `role` of `in`, `out` or `both`. With
+roles set, origin → destination **movements** (turning counts) are reported
+too.
+
 ## Processing pipeline
 
 ```text
@@ -115,7 +141,12 @@ pytest -m "not model"       # skip the tests that need YOLO weights
   size rules, crop-classifier voting.
 - `tests/test_pipeline.py`: the end-to-end pipeline on a synthetic video with
   all three trackers, stage previews, pipeline video and exports.
-- `tests/test_api.py`: upload → ROIs → analysis → WebSocket → exports.
+- `tests/test_api.py`: upload → ROIs (colours, unique names) → analysis →
+  WebSocket → exports.
+- `tests/test_multi_road.py`: a 4-road junction
+  (`tests/data/videos/synthetic_junction.mp4`, regenerate with
+  `tests/data/make_synthetic_junction.py`). Counting only 2 of the 4 roads,
+  each road separately by name and vehicle type, and in/out movements.
 - `tests/test_real_videos.py`: **real footage with hand-counted ground truth**
   (`tests/data/videos/`):
   - `overhead_road.mp4` (MIT): 5 cars over two lanes and a gate. The motion

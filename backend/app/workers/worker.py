@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_engine, get_sessionmaker, init_db
-from app.models import Analysis, LineCrossingRecord, Video, ZoneCountRecord
+from app.models import Analysis, LineCrossingRecord, MovementRecord, Video, ZoneCountRecord
 from app.pipeline.classifier import ClassRefiner, create_refiner
 from app.pipeline.detector import Detector, MotionDetector, YoloDetector
 from app.pipeline.engine import AnalysisCancelled, PipelineConfig, RegionDef, run_pipeline
@@ -188,12 +188,13 @@ def process(analysis_id: str) -> None:
                 )
         return last_cancel_check[1]
 
-    def on_progress(pct: float, frame_index: int, counts: dict[str, int]) -> None:
+    def on_progress(pct: float, frame_index: int, breakdown: dict[str, dict]) -> None:
         with SessionLocal() as db:
             db.execute(
                 update(Analysis)
                 .where(Analysis.id == analysis_id)
-                .values(progress=round(pct, 4), live_counts=counts, frames_processed=frame_index,
+                .values(progress=round(pct, 4), live_counts={k: v["total"] for k, v in breakdown.items()},
+                        live_breakdown=breakdown, frames_processed=frame_index,
                         message=f"Processing frame {frame_index}")
             )
             db.commit()
@@ -211,7 +212,8 @@ def process(analysis_id: str) -> None:
         )
         if annotated_path and annotated_path.exists():
             _transcode_for_web(annotated_path)
-        summary = summarize(result.zone_counts, result.line_crossings, cfg.get("time_bin_seconds", 60))
+        summary = summarize(result.zone_counts, result.line_crossings, cfg.get("time_bin_seconds", 60),
+                            result.movements)
         summary["frames_processed"] = result.frames_processed
         summary["video_duration_seconds"] = result.duration_seconds
         summary["processing_seconds"] = round(result.elapsed_seconds, 2)
@@ -219,13 +221,14 @@ def process(analysis_id: str) -> None:
             job = db.get(Analysis, analysis_id)
             db.add_all(ZoneCountRecord(analysis_id=analysis_id, **c) for c in result.zone_counts)
             db.add_all(LineCrossingRecord(analysis_id=analysis_id, **c) for c in result.line_crossings)
+            db.add_all(MovementRecord(analysis_id=analysis_id, **m) for m in result.movements)
             job.summary = summary
             job.status = "completed"
             job.progress = 1.0
             job.frames_processed = result.frames_processed
             job.message = (
-                f"Counted {len(result.zone_counts)} area events and "
-                f"{len(result.line_crossings)} line crossings"
+                f"Counted {len(result.zone_counts)} area events, "
+                f"{len(result.line_crossings)} line crossings, {len(result.movements)} movements"
             )
             job.annotated_video_path = str(annotated_path) if annotated_path and annotated_path.exists() else None
             job.finished_at = datetime.now(UTC)

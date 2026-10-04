@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.colors import next_region_color
 from app.config import get_settings
 from app.db import get_db
 from app.models import Region, Video
@@ -148,11 +149,22 @@ def list_regions(video_id: str, db: Session = Depends(get_db)) -> list[Region]:
 
 @router.post("/{video_id}/regions", response_model=RegionOut, status_code=status.HTTP_201_CREATED)
 def create_region(video_id: str, body: RegionCreate, db: Session = Depends(get_db)) -> Region:
-    get_video_or_404(video_id, db)
-    region = Region(video_id=video_id, **body.model_dump())
+    video = get_video_or_404(video_id, db)
+    _ensure_unique_name(video, body.name)
+    data = body.model_dump()
+    # Every area/line gets its own colour, used consistently in the editor,
+    # live view, annotated video and results.
+    data["color"] = data.get("color") or next_region_color([r.color for r in video.regions])
+    region = Region(video_id=video_id, **data)
     db.add(region)
     db.commit()
     return region
+
+
+def _ensure_unique_name(video: Video, name: str, exclude_id: str | None = None) -> None:
+    """Results are reported per road name, so names must be unique within a video."""
+    if any(r.name.strip().lower() == name.strip().lower() and r.id != exclude_id for r in video.regions):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"A road/area/line named {name!r} already exists")
 
 
 def _get_region(video_id: str, region_id: str, db: Session) -> Region:
@@ -166,6 +178,8 @@ def _get_region(video_id: str, region_id: str, db: Session) -> Region:
 def update_region(video_id: str, region_id: str, body: RegionUpdate, db: Session = Depends(get_db)) -> Region:
     region = _get_region(video_id, region_id, db)
     changes = body.model_dump(exclude_unset=True)
+    if "name" in changes and changes["name"]:
+        _ensure_unique_name(region.video, changes["name"], exclude_id=region.id)
     # Re-validate the merged region so edits cannot produce invalid shapes.
     try:
         merged = RegionCreate(
@@ -175,6 +189,7 @@ def update_region(video_id: str, region_id: str, body: RegionUpdate, db: Session
             color=changes.get("color", region.color),
             label_forward=changes.get("label_forward", region.label_forward),
             label_backward=changes.get("label_backward", region.label_backward),
+            role=changes.get("role", region.role),
         )
     except ValidationError as exc:
         raise HTTPException(422, jsonable_encoder(exc.errors())) from exc

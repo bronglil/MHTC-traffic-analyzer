@@ -23,6 +23,7 @@ def summarize(
     zone_counts: Iterable[Mapping[str, Any]],
     line_crossings: Iterable[Mapping[str, Any]],
     time_bin_seconds: int = 60,
+    movements: Iterable[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build the results summary.
 
@@ -89,8 +90,25 @@ def summarize(
             out["by_direction_type"] = {k: dict(v) for k, v in d["by_direction_type"].items()}
         return out
 
+    # Origin -> destination movements (e.g. junction turning counts).
+    mv: dict[tuple[str, str], dict[str, Any]] = {}
+    for m in movements:
+        row = mv.setdefault((m["from_name"], m["to_name"]),
+                            {"from": m["from_name"], "to": m["to_name"], "total": 0, "by_type": Counter()})
+        row["total"] += 1
+        row["by_type"][m["vehicle_type"]] += 1
+        start, label = _bin_label(float(m["start_time"]), bin_s)
+        trow = time_rows.setdefault(
+            (f"mv:{m['from_name']}>{m['to_name']}", start),
+            {"source": "movement", "name": f"{m['from_name']} → {m['to_name']}", "period_start": start,
+             "period": label, "total": 0, "by_type": defaultdict(int)},
+        )
+        trow["total"] += 1
+        trow["by_type"][m["vehicle_type"]] += 1
+
     return {
         "time_bin_seconds": bin_s,
+        "movements": [plain(r) for r in sorted(mv.values(), key=lambda r: (r["from"], r["to"]))],
         "areas": [plain(a) for a in areas.values()],
         "lines": [plain(ln) for ln in lines.values()],
         "by_area_type": [{"area": a, "vehicle_type": t, "count": n} for (a, t), n in sorted(by_area_type.items())],

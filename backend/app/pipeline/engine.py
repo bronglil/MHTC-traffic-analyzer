@@ -32,6 +32,8 @@ class RegionDef:
     points: list[list[float]]
     label_forward: str = "A→B"
     label_backward: str = "B→A"
+    color: str | None = None
+    role: str = "count"  # polygons: count | in | out | both (movement counting)
 
 
 @dataclass
@@ -51,6 +53,7 @@ class PipelineConfig:
 class PipelineResult:
     zone_counts: list[dict[str, Any]]
     line_crossings: list[dict[str, Any]]
+    movements: list[dict[str, Any]]
     frames_processed: int
     duration_seconds: float
     elapsed_seconds: float
@@ -60,7 +63,8 @@ class AnalysisCancelled(Exception):
     pass
 
 
-ProgressCallback = Callable[[float, int, dict[str, int]], None]
+# (fraction done, frame index, live breakdown {zone/line id: {total, by_type, by_direction}})
+ProgressCallback = Callable[[float, int, dict[str, dict]], None]
 # Receives the per-stage images (see annotate.STAGES) for the current frame.
 StageCallback = Callable[[dict[str, np.ndarray], int, float], None]
 
@@ -79,10 +83,11 @@ def build_specs(
     if include_whole_frame or not polygons:
         zones.append(ZoneSpec(WHOLE_FRAME_ZONE_ID, "Whole Frame", None))
     for r in polygons:
-        zones.append(ZoneSpec(r.id, r.name, tuple(px(p) for p in r.points)))
+        zones.append(ZoneSpec(r.id, r.name, tuple(px(p) for p in r.points), r.color, r.role or "count"))
     for r in regions:
         if r.kind == "line" and len(r.points) >= 2:
-            lines.append(LineSpec(r.id, r.name, px(r.points[0]), px(r.points[1]), r.label_forward, r.label_backward))
+            lines.append(LineSpec(r.id, r.name, px(r.points[0]), px(r.points[1]), r.label_forward, r.label_backward,
+                                  r.color))
     return zones, lines
 
 
@@ -153,17 +158,18 @@ def run_pipeline(
             if on_progress and now - last_report >= progress_interval:
                 last_report = now
                 pct = min(0.99, (frame.index + 1) / total) if total else 0.0
-                on_progress(pct, frame.index, analyzer.live_counts())
+                on_progress(pct, frame.index, analyzer.live_breakdown())
     finally:
         if annotator:
             annotator.close()
 
     analyzer.finish()
     if on_progress:
-        on_progress(1.0, total, analyzer.live_counts())
+        on_progress(1.0, total, analyzer.live_breakdown())
     return PipelineResult(
         zone_counts=[asdict(c) for c in analyzer.zone_counts],
         line_crossings=[asdict(c) for c in analyzer.line_crossings],
+        movements=[asdict(m) for m in analyzer.movements],
         frames_processed=processed,
         duration_seconds=info.duration,
         elapsed_seconds=time.monotonic() - started,

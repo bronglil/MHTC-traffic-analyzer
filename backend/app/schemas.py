@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.pipeline.tracker import TRACKER_TYPES
 from app.vehicles import ALL_VEHICLE_TYPES
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+
 # Plain weight-file names only (no paths): weights are pickles, see worker.resolve_model.
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.(pt|onnx|engine|torchscript)$")
 
@@ -24,9 +26,11 @@ class RegionBase(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     kind: Literal["polygon", "line"]
     points: list[list[float]] = Field(description="Normalized [x, y] pairs in 0..1")
-    color: str | None = None
+    color: str | None = Field(None, pattern=HEX_COLOR)
     label_forward: str = Field("A→B", max_length=64)
     label_backward: str = Field("B→A", max_length=64)
+    role: Literal["count", "in", "out", "both"] | None = Field(
+        None, description="Areas: road role for movement counting (in / out / both); count = totals only")
 
     @field_validator("points")
     @classmethod
@@ -53,8 +57,9 @@ class RegionCreate(RegionBase):
 
 class RegionUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
+    role: Literal["count", "in", "out", "both"] | None = None
     points: list[list[float]] | None = None
-    color: str | None = None
+    color: str | None = Field(None, pattern=HEX_COLOR)
     label_forward: str | None = None
     label_backward: str | None = None
 
@@ -134,6 +139,7 @@ class AnalysisOut(ORM):
     message: str | None
     config: dict[str, Any]
     live_counts: dict[str, int]
+    live_breakdown: dict[str, Any] | None = None
     frames_processed: int
     has_annotated_video: bool = False
     created_at: datetime

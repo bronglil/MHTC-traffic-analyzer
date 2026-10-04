@@ -53,6 +53,8 @@ class Region(Base):
     color: Mapped[str | None] = mapped_column(String(16), nullable=True)
     label_forward: Mapped[str] = mapped_column(String(64), default="A→B")
     label_backward: Mapped[str] = mapped_column(String(64), default="B→A")
+    # Polygons only: count | in | out | both — roads used for movement counting
+    role: Mapped[str | None] = mapped_column(String(8), nullable=True, default="count")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     video: Mapped[Video] = relationship(back_populates="regions")
@@ -70,6 +72,8 @@ class Analysis(Base):
     # reproducible even if the video's ROIs are edited afterwards.
     config: Mapped[dict[str, Any]] = mapped_column(JSON)
     live_counts: Mapped[dict[str, int]] = mapped_column(JSON, default=dict)
+    # {zone/line id: {total, by_type, by_direction}} including still-active tracks
+    live_breakdown: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     annotated_video_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     frames_processed: Mapped[int] = mapped_column(Integer, default=0)
@@ -85,6 +89,9 @@ class Analysis(Base):
     )
     line_crossings: Mapped[list[LineCrossingRecord]] = relationship(
         cascade="all, delete-orphan", order_by="LineCrossingRecord.time"
+    )
+    movements: Mapped[list[MovementRecord]] = relationship(
+        cascade="all, delete-orphan", order_by="MovementRecord.start_time"
     )
 
 
@@ -124,6 +131,26 @@ class LineCrossingRecord(Base):
     time: Mapped[float] = mapped_column(Float)
 
 
+class MovementRecord(Base):
+    """One vehicle that entered via one road (area) and left via another."""
+
+    __tablename__ = "movements"
+    __table_args__ = (Index("ix_movements_analysis", "analysis_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    analysis_id: Mapped[str] = mapped_column(ForeignKey("analyses.id", ondelete="CASCADE"))
+    from_id: Mapped[str] = mapped_column(String(64))
+    from_name: Mapped[str] = mapped_column(String(200))
+    to_id: Mapped[str] = mapped_column(String(64))
+    to_name: Mapped[str] = mapped_column(String(200))
+    track_id: Mapped[int] = mapped_column(Integer)
+    vehicle_type: Mapped[str] = mapped_column(String(32))
+    start_frame: Mapped[int] = mapped_column(Integer)
+    end_frame: Mapped[int] = mapped_column(Integer)
+    start_time: Mapped[float] = mapped_column(Float)
+    end_time: Mapped[float] = mapped_column(Float)
+
+
 ZONE_FIELDS = [
     "zone_id", "zone_name", "track_id", "vehicle_type", "direction", "first_frame",
     "last_frame", "first_time", "last_time", "frames_in_zone", "mean_confidence",
@@ -137,3 +164,11 @@ def zone_dict(r: ZoneCountRecord) -> dict[str, Any]:
 
 def line_dict(r: LineCrossingRecord) -> dict[str, Any]:
     return {f: getattr(r, f) for f in LINE_FIELDS}
+
+
+MOVEMENT_FIELDS = ["from_id", "from_name", "to_id", "to_name", "track_id", "vehicle_type",
+                   "start_frame", "end_frame", "start_time", "end_time"]
+
+
+def movement_dict(r: MovementRecord) -> dict[str, Any]:
+    return {f: getattr(r, f) for f in MOVEMENT_FIELDS}

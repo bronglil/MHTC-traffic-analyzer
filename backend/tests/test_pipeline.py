@@ -23,11 +23,11 @@ def _run(video, tracker, **kw):
 
 @pytest.mark.parametrize("tracker_kind", ["iou", "bytetrack", "botsort"])
 def test_pipeline_counts(video_file, tracker_kind):
-    progress = []
+    progress, breakdowns = [], []
     cfg = PipelineConfig(vehicle_types=["car", "bus"], regions=[LEFT_HALF, GATE])
     result = run_pipeline(
         str(video_file), cfg, FakeDetector(), create_tracker(tracker_kind, FPS, 0.3),
-        on_progress=lambda p, f, c: progress.append(p), progress_interval=0,
+        on_progress=lambda p, f, c: (progress.append(p), breakdowns.append(c)), progress_interval=0,
     )
     zones = {(c["zone_id"], c["vehicle_type"]): c for c in result.zone_counts}
     assert set(zones) == {(WHOLE_FRAME_ZONE_ID, "car"), (WHOLE_FRAME_ZONE_ID, "bus"), ("left", "car")}
@@ -37,6 +37,8 @@ def test_pipeline_counts(video_file, tracker_kind):
         ("gate", "car", "eastbound")
     ]
     assert progress[-1] == 1.0
+    assert breakdowns[-1]["gate"] == {"total": 1, "by_type": {"car": 1}, "by_direction": {"eastbound": 1}}
+    assert breakdowns[-1]["left"]["by_type"] == {"car": 1}
     assert result.frames_processed == 60
 
 
@@ -102,7 +104,7 @@ def test_stage_previews_and_pipeline_video(video_file, tmp_path):
                  on_stages=lambda st, i, t: snapshots.append((st, i)), stage_interval=0)
     assert len(snapshots) == 60
     stages, _ = snapshots[30]
-    assert list(stages) == [k for k, _ in STAGES]
+    assert list(stages) == [k for k, _ in STAGES] + ["live"]
     assert all(img.shape == (360, 640, 3) for img in stages.values())
     # The detection panel differs from the raw frame (boxes drawn).
     assert (stages["detection"] != stages["frame"]).any()
