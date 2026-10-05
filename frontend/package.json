@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc -b",
-    "preview": "vite preview"
+    "typecheck": "tsc -b && tsc -p tsconfig.test.json",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "konva": "^10.7.0",
@@ -17,12 +19,15 @@
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.2"
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
   }
 }

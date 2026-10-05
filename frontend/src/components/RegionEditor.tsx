@@ -83,6 +83,9 @@ export default function RegionEditor({
         if (draft.length) setDraft([]);
         else onCancelDraw();
       } else if (e.key === "Enter" && mode === "polygon") {
+        // The naming popup opens and focuses its input during this keydown; without
+        // preventDefault the same Enter would submit it with the default name.
+        e.preventDefault();
         finishPolygon(draft);
       } else if (e.key === "Backspace" && draft.length) {
         e.preventDefault();

@@ -132,7 +132,7 @@ export default function WorkspacePage() {
   // Delete key removes the selected region.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.closest("input, textarea, select")) return;
+      if ((e.target as HTMLElement)?.closest("input, textarea, select, [role=dialog]") || pending) return;
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId && mode === "select") deleteRegion(selectedId);
     };
     window.addEventListener("keydown", onKey);

@@ -130,10 +130,22 @@ Configuration is via `TV_*` environment variables (see `backend/app/config.py`):
 ## Tests
 
 ```bash
+# Backend
 cd backend
 pytest                      # everything, including the real-video tests (downloads yolo11n.pt once)
 pytest -m "not model"       # skip the tests that need YOLO weights
+
+# Frontend
+cd frontend
+npm run typecheck           # app + test code
+npm test                    # unit tests (Vitest)
+npm run test:e2e            # browser tests (Playwright) against a real API + fresh database
+                            # first time: npx playwright install chromium
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push.
+
+Backend:
 
 - `tests/test_analyzer.py`: counting rules (once per zone, re-entry, flicker,
   majority-vote type, lines, direction).
@@ -159,6 +171,19 @@ pytest -m "not model"       # skip the tests that need YOLO weights
   Add your own survey clips (e.g. with LGV1/LGV2 ground truth) by dropping a
   video and a JSON file into that folder. See
   [docs/vehicle-classification.md](docs/vehicle-classification.md#proving-accuracy-ground-truth-clips).
+
+Frontend:
+
+- `src/lib/__tests__/counts.test.ts`: the per-road counts behind the tiles
+  and drawer (live vs final, Whole Frame on/off), and the area colour palette
+  kept in sync with the backend.
+- `e2e/multi-road.spec.ts`: the full user journey in a real browser. It
+  uploads the 4-road junction, drags rectangles over 2 roads, names them in
+  the popup (duplicate names refused), runs the analysis, and checks the live
+  view, the results table (North Road 2, East Road 3, no other roads), the
+  counts drawer, the area colours, and the CSV/JSON/XLSX exports. It also
+  covers polygon drawing with fast clicks and keyboard safety while the popup
+  is open.
 
 ## API overview
 
