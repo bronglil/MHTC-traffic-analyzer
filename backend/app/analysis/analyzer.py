@@ -350,9 +350,13 @@ class TrafficAnalyzer:
         return compass_direction(start, end)
 
     def _touches_border(self, obj: TrackedObject) -> bool:
+        """Box at (or within half its own size of) the picture edge: the vehicle is
+        coming into or going out of view. The size-relative margin covers trackers
+        that confirm a track a frame or two after it first appears at the edge."""
         w, h = self._size
-        m = 0.01 * max(w, h)
-        return obj.x1 <= m or obj.y1 <= m or obj.x2 >= w - m or obj.y2 >= h - m
+        mx = max(0.01 * w, 0.5 * (obj.x2 - obj.x1))
+        my = max(0.01 * h, 0.5 * (obj.y2 - obj.y1))
+        return obj.x1 <= mx or obj.y1 <= my or obj.x2 >= w - mx or obj.y2 >= h - my
 
     def _close_edge_exits(self, st: _TrackState) -> None:
         """A track that ended while touching the picture edge drove out of view: for

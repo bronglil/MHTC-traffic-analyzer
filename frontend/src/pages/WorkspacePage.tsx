@@ -33,6 +33,8 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   annotated_video_layout: "overlay",
   count_stationary: false,
   count_rule: "crossing",
+  sliced_detection: false,
+  low_light: "off",
   footage: "normal",
   start_seconds: 0,
   end_seconds: null,
@@ -54,7 +56,7 @@ export default function WorkspacePage() {
   const [regions, setRegions] = useState<Region[]>([]);
   const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [meta, setMeta] = useState<Meta | null>(null);
-  const [mode, setMode] = useState<EditorMode>("select");
+  const [mode, setMode] = useState<EditorMode>("view");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AnalysisSettings>(DEFAULT_SETTINGS);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
@@ -76,6 +78,8 @@ export default function WorkspacePage() {
         time_bin_seconds: defaultTimeBin(v.duration_seconds),
         // Small/distant vehicles vanish when a 4K frame is shrunk to 640 px.
         image_size: v.width >= 3000 ? 1280 : v.width >= 1800 ? 960 : 640,
+        sliced_detection: v.width >= 1800, // HD/4K: distant vehicles are small
+
       }));
     }).catch(fail);
     api.meta().then(setMeta).catch(() => undefined);
@@ -195,23 +199,28 @@ export default function WorkspacePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            <ModeButton active={mode === "view"} onClick={() => setMode("view")} title="Shapes are locked: nothing moves if you click or drag by mistake">
+              🔒 View
+            </ModeButton>
+            <span className="mx-1 h-6 w-px bg-[var(--border)]" aria-hidden />
             <ModeButton active={mode === "rect"} onClick={() => { setMode("rect"); setSelectedId(null); }}>
               ▭ Draw road (rectangle)
             </ModeButton>
-            <ModeButton active={mode === "select"} onClick={() => setMode("select")}>Select / edit</ModeButton>
             <ModeButton active={mode === "polygon"} onClick={() => { setMode("polygon"); setSelectedId(null); }}>
               ⬠ Draw area (polygon)
             </ModeButton>
             <ModeButton active={mode === "line"} onClick={() => { setMode("line"); setSelectedId(null); }}>
               ╱ Draw counting line
             </ModeButton>
-            <span className="text-xs text-ink-3">
-              {mode === "rect" && "Press and drag over a road you want to count, then name it"}
-              {mode === "polygon" && "Click to add points · click first point, double-click or Enter to finish · Esc to cancel"}
-              {mode === "line" && "Click the start point, then the end point · Esc to cancel"}
-              {mode === "select" && "Click a shape to select · drag it or its points to edit · Delete to remove"}
-            </span>
+            <ModeButton active={mode === "select"} onClick={() => setMode("select")}>✎ Edit shapes</ModeButton>
           </div>
+          <p className="text-xs text-ink-3" role="status">
+            {mode === "view" && "Shapes are locked. Pick a drawing tool to add a road/area/line, or Edit shapes to move one."}
+            {mode === "rect" && "Press and drag over the road you want to count (at least 20 px), then name it. Esc to cancel."}
+            {mode === "polygon" && "Click to add points · click the first point, double-click or press Enter to finish · Esc to cancel"}
+            {mode === "line" && "Click the start point, then the end point · Esc to cancel"}
+            {mode === "select" && "Click a shape to select it · drag it or its corner points to adjust · Delete removes it · View to lock again"}
+          </p>
           <VideoCanvas
             src={api.videoUrl(video.id)}
             aspect={video.width / Math.max(1, video.height)}
@@ -228,10 +237,10 @@ export default function WorkspacePage() {
                 onSelect={setSelectedId}
                 onCreate={(kind, points) => {
                   setPending({ kind, points });
-                  setMode("select");
+                  setMode("view"); // one shape per tool pick, like putting the pen down
                 }}
                 onChangePoints={(id, points) => patchRegion(id, { points })}
-                onCancelDraw={() => setMode("select")}
+                onCancelDraw={() => setMode("view")}
               />
             )}
           />
@@ -269,7 +278,7 @@ export default function WorkspacePage() {
                       return n;
                     })
                   }
-                  onSelect={() => { setMode("select"); setSelectedId(r.id); }}
+                  onSelect={() => setSelectedId(r.id)}
                   onPatch={(p) => patchRegion(r.id, p)}
                   onDelete={() => deleteRegion(r.id)}
                 />
@@ -376,6 +385,22 @@ export default function WorkspacePage() {
                       onChange={(e) => set("classifier_model", e.target.value || null)} />
                   </Field>
                 )}
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" className="mt-1" checked={!!settings.sliced_detection}
+                    onChange={(e) => set("sliced_detection", e.target.checked)} />
+                  <span>
+                    Detect small / distant vehicles
+                    <span className="block text-xs text-ink-3">Also scans the frame in 4 overlapping tiles (~2.5× slower). Recommended for HD/4K and night.</span>
+                  </span>
+                </label>
+                <Field label="Low-light enhancement">
+                  <select className="input" value={settings.low_light}
+                    onChange={(e) => set("low_light", e.target.value as AnalysisSettings["low_light"])}>
+                    <option value="off">Off (recommended for lit roads)</option>
+                    <option value="auto">Auto: boost contrast when frames are dark</option>
+                    <option value="on">Always on</option>
+                  </select>
+                </Field>
                 <Field label="Detection resolution">
                   <select className="input" value={settings.image_size ?? 640}
                     onChange={(e) => set("image_size", Number(e.target.value) as AnalysisSettings["image_size"])}>
@@ -490,9 +515,14 @@ export default function WorkspacePage() {
   );
 }
 
-function ModeButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+function ModeButton({ active, onClick, children, title }: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  title?: string;
+}) {
   return (
-    <button className={`btn ${active ? "btn-primary" : ""}`} onClick={onClick} aria-pressed={active}>
+    <button className={`btn ${active ? "btn-primary" : ""}`} onClick={onClick} aria-pressed={active} title={title}>
       {children}
     </button>
   );

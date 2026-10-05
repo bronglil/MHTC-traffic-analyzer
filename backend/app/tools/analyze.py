@@ -138,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--detector", choices=["yolo", "motion"], default="yolo")
     p.add_argument("--model", default="yolo11n.pt", help="YOLO weights (file or official name)")
     p.add_argument("--imgsz", type=int, default=None, help="detector resolution (default: from video size)")
+    p.add_argument("--sliced", action="store_true",
+                   help="also detect on 2x2 tiles (finds small / distant vehicles, slower)")
+    p.add_argument("--low-light", choices=["off", "auto", "on"], default="off",
+                   help="CLAHE contrast boost before detection on dark frames")
     p.add_argument("--tracker", choices=["bytetrack", "botsort", "iou", "timelapse"], default="bytetrack")
     p.add_argument("--timelapse", action="store_true",
                    help="time-lapse / low frame-rate footage (time-lapse tracker, 2-frame minimum in an area)")
@@ -174,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.detector == "motion":
         detector, classification = MotionDetector(), "detector"
     else:
-        detector, classification = YoloDetector(args.model, confidence=min(0.1, args.confidence), image_size=imgsz), "size"
+        detector, classification = YoloDetector(args.model, confidence=min(0.1, args.confidence), image_size=imgsz,
+                                tiles=2 if args.sliced else 1), "size"
     cfg = PipelineConfig(
         vehicle_types=[t.strip() for t in args.types.split(",") if t.strip()],
         regions=regions,
@@ -184,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         count_stationary=args.count_parked,
         min_frames_in_zone=2 if args.timelapse else None,
         count_rule=args.count_rule,
+        low_light=args.low_light,
         start_seconds=args.start,
         end_seconds=args.end,
         annotated_video_path=args.annotate,

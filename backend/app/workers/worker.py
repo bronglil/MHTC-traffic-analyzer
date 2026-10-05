@@ -60,13 +60,13 @@ def resolve_model(name: str) -> str:
 
 
 def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None,
-                             image_size: int = 640) -> Detector:
+                             image_size: int = 640, tiles: int = 1) -> Detector:
     if kind == "motion":
         return MotionDetector()  # stateful background model: never shared between jobs
-    key = (model_path, confidence, device, image_size)
+    key = (model_path, confidence, device, image_size, tiles)
     if key not in _detector_cache:
         _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device,
-                                            image_size=image_size)
+                                            image_size=image_size, tiles=tiles)
     return _detector_cache[key]
 
 
@@ -180,6 +180,7 @@ def process(analysis_id: str) -> None:
         count_stationary=cfg.get("count_stationary", False),
         # Analyses created before count rules existed keep their original behaviour.
         count_rule=cfg.get("count_rule", "present"),
+        low_light=cfg.get("low_light", "off"),
         start_seconds=cfg.get("start_seconds", 0.0),
         end_seconds=cfg.get("end_seconds"),
         annotated_video_path=str(annotated_path) if annotated_path else None,
@@ -225,7 +226,8 @@ def process(analysis_id: str) -> None:
 
     try:
         detector = detector_factory(detector_kind, cfg.get("model_path") or settings.model_path, det_conf,
-                                    settings.device, cfg.get("image_size", 640))
+                                    settings.device, cfg.get("image_size", 640),
+                                    2 if cfg.get("sliced_detection") else 1)
         tracker = create_tracker(tracker_kind, fps / max(1, pipeline_cfg.frame_stride), confidence)
         refiner = refiner_factory(classification, height, cfg.get("classifier_model") or settings.classifier_model,
                                   settings.device)

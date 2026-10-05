@@ -113,6 +113,10 @@ class AnalysisSettings(BaseModel):
     end_seconds: float | None = Field(None, gt=0, description="Analyse up to this time (s); default end of video")
     image_size: Literal[640, 960, 1280, 1920] = Field(
         640, description="Detector input size; larger finds small/distant vehicles in HD/4K video but is slower")
+    sliced_detection: bool = Field(
+        False, description="Also detect on 2x2 overlapping tiles (SAHI): finds small/distant vehicles, ~2.5x slower")
+    low_light: Literal["off", "auto", "on"] = Field(
+        "off", description="CLAHE contrast boost before detection on dark frames (unlit roads)")
     count_stationary: bool = Field(
         False, description="Also count vehicles that never move (parked cars); off = moving traffic only")
     time_bin_seconds: int = Field(60, ge=1, le=86400)

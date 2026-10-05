@@ -40,7 +40,10 @@ and you can also generate an annotated video.
 If the camera shows several roads but you only want some of them:
 
 1. Choose **Draw road (rectangle)** and drag a box over each road you want to
-   count. Use **Draw area (polygon)** for curved or angled roads.
+   count; the box shows in translucent red while you drag. Use **Draw area (polygon)** for curved or
+   angled roads. The video opens in **🔒 View** mode, where clicks and drags do nothing, so an area can't
+   be drawn or moved by accident. Each drawing tool works like picking up a pen: it draws one shape
+   (at least 20 px) and goes back to View. Use **✎ Edit shapes** to move or reshape an area.
 2. A popup asks for a **name** for each one (e.g. "A40 inbound", "High
    Street"). Names must be unique per video.
 3. Each road gets its own **colour**, used in the editor, the live view, the
@@ -185,8 +188,14 @@ East arms only; the result is *North Road 2*, *East Road 3*, and the West/South 
 
 ### 4. Night, overhead and other footage
 
-- **Night / low light:** works with YOLO as long as vehicles are visible (tested on a darkened copy of
-  the dual-carriageway clip: same counts). Use **Detection resolution 1280** for small, distant vehicles.
+- **Night / low light:** keep **Detect small / distant vehicles** ticked (it's on automatically for
+  HD/4K). It runs the detector on the full frame plus four overlapping tiles (sliced inference, *SAHI*,
+  Akyon et al. 2022) and merges the results. On the Wikimedia *Traffic on bridge at night* clip it found
+  **64% more vehicles** than the best full-frame setting, all real. **Low-light enhancement** (CLAHE
+  contrast boost) is available for unlit roads, but it's off by default: on the street-lit bridge it
+  didn't find more vehicles. A known limit of stock models at night is oncoming cars whose headlights
+  glare straight into the camera; the reliable fix is fine-tuning on night footage (see
+  [docs/vehicle-classification.md](docs/vehicle-classification.md)).
 - **Overhead camera** (looking straight down): set **Camera view → Overhead**. Stock YOLO doesn't
   recognise cars from above; choose **Detector → Motion** for fixed cameras (exact on
   `overhead_road.mp4`) or train a model (see [docs/vehicle-classification.md](docs/vehicle-classification.md)).
@@ -239,7 +248,8 @@ Right carriageway      0  -                               -
 Slip road              1  Car 1                           SE 1
 ```
 
-Options: `--count crossing|entering|present` (default `crossing`), `--timelapse`,
+Options: `--count crossing|entering|present` (default `crossing`), `--timelapse`, `--sliced`,
+`--low-light off|auto|on`,
 `--polygon "Name=x,y;x,y;..."` for angled roads, `--line "Name=x1,y1,x2,y2"` for counting
 lines, `--camera overhead`, `--detector motion`, `--tracker iou`, `--imgsz 1280`, and
 `--layout pipeline` (all six stages side by side in the annotated video). Run with `--help` for

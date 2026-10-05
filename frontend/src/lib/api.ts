@@ -50,6 +50,8 @@ export interface AnalysisSettings {
   annotated_video_layout: "overlay" | "pipeline";
   count_stationary?: boolean;
   count_rule?: "crossing" | "entering" | "present";
+  sliced_detection?: boolean;
+  low_light?: "off" | "auto" | "on";
   footage?: "normal" | "timelapse";
   start_seconds?: number;
   end_seconds?: number | null;

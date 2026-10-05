@@ -177,3 +177,46 @@ def test_millisecond_timebase_reports_real_fps(video_file, monkeypatch):
     assert info.fps == pytest.approx(FPS, rel=0.01)
     assert info.frame_count == 60
     assert info.duration == pytest.approx(3.0, rel=0.01)
+
+
+def test_sliced_detection_merges_tiles_without_duplicates():
+    """Tiles overlap, so one vehicle seen by the full frame and by two tiles must stay one box."""
+    import numpy as np
+
+    from app.pipeline.detector import YoloDetector
+
+    det = YoloDetector.__new__(YoloDetector)  # no model: fake the per-image predictions
+    det.tiles, det.tile_overlap = 2, 0.2
+    det._class_map = {0: "car"}
+    img = np.zeros((400, 800, 3), np.uint8)
+    regions = [(0, 0, 800, 400)] + det._tiles(400, 800)
+    car = (390.0, 180.0, 450.0, 220.0)  # in the overlap of all tiles
+
+    def fake_predict(crops):
+        out = []
+        for (ox, oy, *_), _crop in zip(regions, crops, strict=True):
+            b = np.array([[car[0] - ox, car[1] - oy, car[2] - ox, car[3] - oy]])
+            out.append((b, np.array([0.8]), np.array([0])))
+        return out
+
+    det._predict = fake_predict
+    found = det.detect(img)
+    assert len(found) == 1
+    assert (found[0].x1, found[0].y1, found[0].x2, found[0].y2) == pytest.approx(car)
+    assert len(regions) == 5 and all(x2 - x1 > 400 for x1, _, x2, _ in regions[1:])  # 2x2 overlapping tiles
+
+
+def test_low_light_enhancer():
+    import numpy as np
+
+    from app.pipeline.enhance import LowLightEnhancer
+
+    rng = np.random.default_rng(0)
+    dark = rng.integers(5, 40, (180, 320, 3), dtype=np.uint8)  # dim, low-contrast night texture
+    bright = np.full((90, 160, 3), 150, np.uint8)
+    auto = LowLightEnhancer("auto")
+    assert auto(bright) is bright                       # daylight: untouched
+    assert LowLightEnhancer("auto")(dark) is not dark   # night: enhanced
+    out = LowLightEnhancer("on")(dark)
+    assert out.std() > 1.5 * dark.std()                 # contrast clearly stretched
+    assert LowLightEnhancer("off")(dark) is dark

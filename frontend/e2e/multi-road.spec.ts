@@ -162,6 +162,20 @@ test("polygon drawing works with fast clicks and the drawer is reachable from th
   await expect(page.getByRole("dialog")).toBeHidden();
   await expect(page.getByLabel("Region name")).toHaveCount(1);
 
+  // Locked View mode (the default after drawing): a stray drag creates and moves nothing.
+  await expect(page.getByRole("button", { name: /View/ })).toHaveAttribute("aria-pressed", "true");
+  const videoId = page.url().split("/videos/")[1];
+  const before = (await (await page.request.get(`/api/videos/${videoId}`)).json()).regions;
+  const s = await canvasPoint(page, 320, 60);      // inside the saved polygon
+  const e = await canvasPoint(page, 500, 250);
+  await page.mouse.move(...s);
+  await page.mouse.down();
+  await page.mouse.move(...e, { steps: 6 });
+  await page.mouse.up();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const after = (await (await page.request.get(`/api/videos/${videoId}`)).json()).regions;
+  expect(after).toEqual(before);
+
   // No analysis yet -> no drawer tab on the video page.
   await expect(page.getByTitle("Show vehicle counts")).toHaveCount(0);
 });

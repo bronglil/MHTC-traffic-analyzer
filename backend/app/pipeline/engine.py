@@ -17,7 +17,8 @@ import numpy as np
 from app.analysis.analyzer import WHOLE_FRAME_ZONE_ID, LineSpec, TrafficAnalyzer, ZoneSpec
 from app.pipeline.annotate import StageRenderer, VideoAnnotator
 from app.pipeline.classifier import ClassRefiner, PassThroughRefiner
-from app.pipeline.detector import Detector
+from app.pipeline.detector import Detector, MotionDetector
+from app.pipeline.enhance import LowLightEnhancer
 from app.pipeline.frames import iter_frames, probe
 from app.pipeline.tracker import Tracker
 
@@ -43,6 +44,7 @@ class PipelineConfig:
     include_whole_frame: bool = True
     frame_stride: int = 1
     min_seconds_in_zone: float = 0.3
+    low_light: str = "off"  # off | auto | on - CLAHE before detection on dark frames
     count_rule: str = "present"  # crossing | entering | present (see TrafficAnalyzer)
     min_frames_in_zone: int | None = None  # overrides min_seconds_in_zone (e.g. 2 for time-lapse)
     anchor: str = "bottom_center"
@@ -127,6 +129,8 @@ def run_pipeline(
         relink_gap_frames=round(config.relink_gap_seconds * info.fps),
     )
     renderer = StageRenderer(zones, lines, anchor=config.anchor)
+    # Background subtraction must not see per-frame contrast changes.
+    enhancer = LowLightEnhancer("off" if isinstance(detector, MotionDetector) else config.low_light)
     annotator = None
     if config.annotated_video_path:
         annotator = VideoAnnotator(
@@ -149,7 +153,7 @@ def run_pipeline(
                                  end_frame=end_f):
             if should_cancel and should_cancel():
                 raise AnalysisCancelled()
-            detections = detector.detect(frame.image)                 # Detection
+            detections = detector.detect(enhancer(frame.image))      # Detection (low-light enhanced if dark)
             tracked = tracker.update(detections, frame.image)         # Tracking
             classified = refiner.refine(tracked, frame.image)         # Classification
             analyzer.update(frame.index, frame.timestamp, classified)  # ROI analysis + counting
