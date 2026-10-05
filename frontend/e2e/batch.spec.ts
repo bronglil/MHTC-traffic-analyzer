@@ -86,7 +86,7 @@ test("uploads several videos and runs them one by one as a batch with separate r
   await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
   await expect(page.locator("table").first().getByRole("row", { name: /East Road/ })).toContainText("3");
   await page.getByRole("tab", { name: "Directions" }).click();
-  await expect(page.getByRole("heading", { name: /North Road/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: /North Road/ })).toBeVisible();
   await page.getByRole("tab", { name: "Counted vehicles" }).click();
   await expect(page.getByText("5 area events")).toBeVisible();
   await page.getByLabel("Filter by area or line").selectOption({ label: "East Road" });
