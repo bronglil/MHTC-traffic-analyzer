@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SimpleBars, StackedBars, TimeColumns, presentTypes } from "../components/Charts";
+import CountsDrawer from "../components/CountsDrawer";
 import PipelineStages from "../components/PipelineStages";
 import StatusBadge from "../components/StatusBadge";
-import { api, formatDuration, WHOLE_FRAME_ID, type Analysis, type Summary, type TimeRow } from "../lib/api";
-import { DIRECTION_ORDER, VEHICLE_LABELS, directionLabel, vehicleColor } from "../lib/vehicles";
+import { countEntries } from "../lib/counts";
+import { api, formatDuration, type Analysis, type Summary, type TimeRow } from "../lib/api";
+import { DIRECTION_ORDER, VEHICLE_LABELS, VEHICLE_TYPES, directionLabel, vehicleColor } from "../lib/vehicles";
 
 const ACTIVE = new Set(["queued", "running"]);
 
@@ -47,8 +49,6 @@ export default function AnalysisPage() {
 
   if (!analysis) return <p className="text-sm text-ink-3">{error ?? "Loading…"}</p>;
 
-  const names: Record<string, string> = { [WHOLE_FRAME_ID]: "Whole Frame" };
-  for (const r of analysis.config.regions ?? []) names[r.id] = r.name;
 
   return (
     <div className="space-y-5">
@@ -60,15 +60,17 @@ export default function AnalysisPage() {
           </h1>
           <p className="text-xs text-ink-3">
             {analysis.config.vehicle_types.map((t) => VEHICLE_LABELS[t] ?? t).join(", ")} · {analysis.config.detector ?? "yolo"}{" "}
-            detector · {analysis.config.tracker} tracker · {analysis.config.classification ?? "size"} classification · started{" "}
+            detector · {analysis.config.tracker} tracker
+            {(analysis.config.start_seconds || analysis.config.end_seconds) ? ` · ${formatDuration(analysis.config.start_seconds ?? 0)}–${analysis.config.end_seconds ? formatDuration(analysis.config.end_seconds) : "end"}` : ""} · {analysis.config.classification ?? "size"} classification · started{" "}
             {new Date(analysis.created_at).toLocaleString()}
           </p>
         </div>
         {analysis.status === "completed" && <ExportButtons analysis={analysis} />}
       </div>
 
-      {ACTIVE.has(analysis.status) && <Progress analysis={analysis} names={names} />}
-      <PipelineStages analysisId={analysis.id} live={ACTIVE.has(analysis.status)} />
+      {ACTIVE.has(analysis.status) && <Progress analysis={analysis} />}
+      <PipelineStages analysisId={analysis.id} live={ACTIVE.has(analysis.status)} legend={countEntries(analysis)} />
+      <CountsDrawer analysis={analysis} />
       {analysis.status === "failed" && (
         <div className="card border-red-300 p-4 text-sm">
           <p className="font-medium text-red-700">Analysis failed</p>
@@ -81,7 +83,32 @@ export default function AnalysisPage() {
   );
 }
 
-function Progress({ analysis, names }: { analysis: Analysis; names: Record<string, string> }) {
+/** One tile per selected road/area/line, in its own colour, with the per-type split. */
+function CountTiles({ analysis }: { analysis: Analysis }) {
+  return (
+    <div className="flex flex-wrap gap-3">
+      {countEntries(analysis).map((e) => (
+        <div key={e.id} className="card min-w-[10rem] flex-1 px-3 py-2" style={{ borderLeft: `5px solid ${e.color}` }}>
+          <div className="truncate text-xs text-ink-3" title={e.name}>
+            {e.name}
+            {e.kind === "line" && " (line)"}
+          </div>
+          <div className="text-2xl font-semibold tabular-nums">{e.total}</div>
+          <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-ink-2">
+            {VEHICLE_TYPES.filter((t) => e.by_type[t]).map((t) => (
+              <span key={t} className="inline-flex items-center gap-1">
+                <span className="h-1.5 w-1.5 rounded-sm" style={{ background: vehicleColor(t) }} />
+                {VEHICLE_LABELS[t]} {e.by_type[t]}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Progress({ analysis }: { analysis: Analysis }) {
   const [cancelling, setCancelling] = useState(false);
   const pct = Math.round(analysis.progress * 100);
   return (
@@ -95,19 +122,10 @@ function Progress({ analysis, names }: { analysis: Analysis; names: Record<strin
           <div className="h-full rounded bg-accent transition-all duration-500" style={{ width: `${pct}%` }} />
         </div>
       </div>
-      {Object.keys(analysis.live_counts).length > 0 && (
-        <div>
-          <p className="label mb-2">Live counts (provisional)</p>
-          <div className="flex flex-wrap gap-3">
-            {Object.entries(analysis.live_counts).map(([id, n]) => (
-              <div key={id} className="rounded-lg border border-line px-3 py-2">
-                <div className="text-xs text-ink-3">{names[id] ?? id}</div>
-                <div className="text-xl font-semibold tabular-nums">{n}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <div>
+        <p className="label mb-2">Real-time counts (provisional — includes vehicles still in view)</p>
+        <CountTiles analysis={analysis} />
+      </div>
       <button
         className="btn btn-danger"
         disabled={cancelling}
@@ -177,14 +195,8 @@ function Dashboard({ analysis, summary }: { analysis: Analysis; summary: Summary
 
   return (
     <div className="space-y-5">
+      <CountTiles analysis={analysis} />
       <div className="flex flex-wrap gap-3">
-        {summary.areas.map((a) => (
-          <Tile key={a.id} label={a.name} value={a.total} sub="unique vehicles" />
-        ))}
-        {summary.lines.map((l) => (
-          <Tile key={l.id} label={l.name} value={l.total}
-            sub={Object.entries(l.by_direction).map(([d, n]) => `${d}: ${n}`).join(" · ")} />
-        ))}
         <Tile label="Video processed" value={formatDuration(summary.video_duration_seconds)}
           sub={`${summary.frames_processed} frames in ${formatDuration(summary.processing_seconds)}`} />
       </div>

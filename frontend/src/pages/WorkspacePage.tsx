@@ -14,7 +14,9 @@ import {
   type RegionKind,
   type VideoDetail,
 } from "../lib/api";
-import { VEHICLE_HINTS, VEHICLE_LABELS, VEHICLE_TYPES, regionColor } from "../lib/vehicles";
+import CountsDrawer from "../components/CountsDrawer";
+import NameRegionDialog, { type RegionDetails } from "../components/NameRegionDialog";
+import { REGION_COLORS, VEHICLE_HINTS, VEHICLE_LABELS, VEHICLE_TYPES, regionColor } from "../lib/vehicles";
 
 const DEFAULT_SETTINGS: AnalysisSettings = {
   vehicle_types: [...VEHICLE_TYPES],
@@ -29,6 +31,10 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   time_bin_seconds: 60,
   generate_annotated_video: false,
   annotated_video_layout: "overlay",
+  count_stationary: false,
+  start_seconds: 0,
+  end_seconds: null,
+  image_size: 640,
 };
 
 /** A time period that gives a readable number of bars for the video length. */
@@ -63,11 +69,25 @@ export default function WorkspacePage() {
     api.getVideo(videoId).then((v) => {
       setVideo(v);
       setRegions(v.regions);
-      setSettings((s) => ({ ...s, time_bin_seconds: defaultTimeBin(v.duration_seconds) }));
+      setSettings((s) => ({
+        ...s,
+        time_bin_seconds: defaultTimeBin(v.duration_seconds),
+        // Small/distant vehicles vanish when a 4K frame is shrunk to 640 px.
+        image_size: v.width >= 3000 ? 1280 : v.width >= 1800 ? 960 : 640,
+      }));
     }).catch(fail);
     api.meta().then(setMeta).catch(() => undefined);
     loadAnalyses();
   }, [videoId, loadAnalyses]);
+
+  // The counts drawer shows the most recent analysis of this video (full details incl. summary).
+  const [latest, setLatest] = useState<Analysis | null>(null);
+  const latestKey = analyses[0] ? `${analyses[0].id}:${analyses[0].status}:${analyses[0].progress}` : "";
+  useEffect(() => {
+    if (!analyses[0]) return setLatest(null);
+    api.getAnalysis(analyses[0].id).then(setLatest).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestKey]);
 
   // Keep the analyses list fresh while any job is active.
   useEffect(() => {
@@ -76,19 +96,22 @@ export default function WorkspacePage() {
     return () => clearInterval(t);
   }, [analyses, loadAnalyses]);
 
-  const createRegion = async (kind: RegionKind, points: Point[]) => {
-    const n = regions.filter((r) => r.kind === kind).length + 1;
+  // A shape that has been drawn and is waiting for its name (popup open).
+  const [pending, setPending] = useState<{ kind: RegionKind; points: Point[] } | null>(null);
+  const nextColor = REGION_COLORS.find((c) => !regions.some((r) => r.color?.toLowerCase() === c)) ??
+    REGION_COLORS[regions.length % REGION_COLORS.length];
+
+  const saveRegion = async (details: RegionDetails) => {
+    if (!pending) return;
+    const { kind, points } = pending;
+    setPending(null);
+    const firstArea = kind === "polygon" && !regions.some((r) => r.kind === "polygon");
     try {
-      const r = await api.createRegion(videoId, {
-        name: kind === "polygon" ? `Area ${n}` : `Line ${n}`,
-        kind,
-        points,
-        label_forward: "A→B",
-        label_backward: "B→A",
-      });
+      const r = await api.createRegion(videoId, { kind, points, color: nextColor, ...details });
       setRegions((rs) => [...rs, r]);
       setSelectedId(r.id);
-      setMode("select");
+      // Once you pick specific roads, count only those (Whole Frame can be re-ticked).
+      if (firstArea) setSettings((s) => ({ ...s, include_whole_frame: false }));
     } catch (e) {
       fail(e);
     }
@@ -118,7 +141,7 @@ export default function WorkspacePage() {
   // Delete key removes the selected region.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.closest("input, textarea, select")) return;
+      if ((e.target as HTMLElement)?.closest("input, textarea, select, [role=dialog]") || pending) return;
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId && mode === "select") deleteRegion(selectedId);
     };
     window.addEventListener("keydown", onKey);
@@ -170,14 +193,18 @@ export default function WorkspacePage() {
       <div className="grid gap-4 lg:grid-cols-[1fr_22rem]">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            <ModeButton active={mode === "rect"} onClick={() => { setMode("rect"); setSelectedId(null); }}>
+              ▭ Draw road (rectangle)
+            </ModeButton>
             <ModeButton active={mode === "select"} onClick={() => setMode("select")}>Select / edit</ModeButton>
             <ModeButton active={mode === "polygon"} onClick={() => { setMode("polygon"); setSelectedId(null); }}>
-              ⬠ Draw area
+              ⬠ Draw area (polygon)
             </ModeButton>
             <ModeButton active={mode === "line"} onClick={() => { setMode("line"); setSelectedId(null); }}>
               ╱ Draw counting line
             </ModeButton>
             <span className="text-xs text-ink-3">
+              {mode === "rect" && "Press and drag over a road you want to count, then name it"}
               {mode === "polygon" && "Click to add points · click first point, double-click or Enter to finish · Esc to cancel"}
               {mode === "line" && "Click the start point, then the end point · Esc to cancel"}
               {mode === "select" && "Click a shape to select · drag it or its points to edit · Delete to remove"}
@@ -197,7 +224,10 @@ export default function WorkspacePage() {
                 mode={mode}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                onCreate={createRegion}
+                onCreate={(kind, points) => {
+                  setPending({ kind, points });
+                  setMode("select");
+                }}
                 onChangePoints={(id, points) => patchRegion(id, { points })}
                 onCancelDraw={() => setMode("select")}
               />
@@ -268,6 +298,24 @@ export default function WorkspacePage() {
               estimated from vehicle size unless a custom LGV model is configured.
             </p>
 
+            <div>
+              <span className="label">Part of video to analyse (seconds)</span>
+              <div className="mt-1 flex items-center gap-2 text-sm">
+                <input type="number" min={0} step={0.5} className="input w-24" aria-label="From (seconds)"
+                  value={settings.start_seconds ?? 0}
+                  onChange={(e) => set("start_seconds", Math.max(0, Number(e.target.value) || 0))} />
+                <span className="text-ink-3">to</span>
+                <input type="number" min={0} step={0.5} className="input w-24" aria-label="To (seconds)"
+                  placeholder={video.duration_seconds.toFixed(1)}
+                  value={settings.end_seconds ?? ""}
+                  onChange={(e) => set("end_seconds", e.target.value === "" ? null : Math.max(0, Number(e.target.value)))} />
+                <span className="text-xs text-ink-3">of {formatDuration(video.duration_seconds)}</span>
+              </div>
+              {settings.end_seconds != null && settings.end_seconds <= (settings.start_seconds ?? 0) && (
+                <p className="mt-1 text-xs text-red-600">“To” must be after “From”.</p>
+              )}
+            </div>
+
             <Field label="Camera view">
               <select className="input" value={settings.anchor} onChange={(e) => set("anchor", e.target.value as AnalysisSettings["anchor"])}>
                 <option value="bottom_center">Roadside / pole-mounted (oblique)</option>
@@ -302,6 +350,15 @@ export default function WorkspacePage() {
                       onChange={(e) => set("classifier_model", e.target.value || null)} />
                   </Field>
                 )}
+                <Field label="Detection resolution">
+                  <select className="input" value={settings.image_size ?? 640}
+                    onChange={(e) => set("image_size", Number(e.target.value) as AnalysisSettings["image_size"])}>
+                    <option value={640}>640 px — fastest (SD / near vehicles)</option>
+                    <option value={960}>960 px — HD video</option>
+                    <option value={1280}>1280 px — 4K / distant vehicles</option>
+                    <option value={1920}>1920 px — 4K, small vehicles (slow)</option>
+                  </select>
+                </Field>
                 <Field label="Tracker">
                   <select className="input" value={settings.tracker} onChange={(e) => set("tracker", e.target.value)}>
                     {(meta?.trackers ?? ["bytetrack", "botsort", "iou"]).map((t) => (
@@ -338,6 +395,14 @@ export default function WorkspacePage() {
               </div>
             </details>
 
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={!!settings.count_stationary}
+                onChange={(e) => set("count_stationary", e.target.checked)} />
+              <span>
+                Count parked / stationary vehicles
+                <span className="block text-xs text-ink-3">Off: only vehicles that move through a road are counted</span>
+              </span>
+            </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={settings.generate_annotated_video}
                 onChange={(e) => set("generate_annotated_video", e.target.checked)} />
@@ -355,7 +420,8 @@ export default function WorkspacePage() {
               </div>
             )}
 
-            <button className="btn btn-primary w-full py-2" disabled={submitting || settings.vehicle_types.length === 0}
+            <button className="btn btn-primary w-full py-2" disabled={submitting || settings.vehicle_types.length === 0 ||
+                (settings.end_seconds != null && settings.end_seconds <= (settings.start_seconds ?? 0))}
               onClick={run}>
               {submitting ? "Submitting…" : "Run analysis"}
             </button>
@@ -381,6 +447,19 @@ export default function WorkspacePage() {
           </section>
         </aside>
       </div>
+      {latest && <CountsDrawer analysis={latest} />}
+      {pending && (
+        <NameRegionDialog
+          kind={pending.kind}
+          color={nextColor}
+          defaultName={pending.kind === "polygon"
+            ? `Road ${regions.filter((r) => r.kind === "polygon").length + 1}`
+            : `Line ${regions.filter((r) => r.kind === "line").length + 1}`}
+          existingNames={regions.map((r) => r.name)}
+          onSave={saveRegion}
+          onCancel={() => setPending(null)}
+        />
+      )}
     </div>
   );
 }

@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.pipeline.tracker import TRACKER_TYPES
 from app.vehicles import ALL_VEHICLE_TYPES
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+
 # Plain weight-file names only (no paths): weights are pickles, see worker.resolve_model.
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.(pt|onnx|engine|torchscript)$")
 
@@ -24,9 +26,11 @@ class RegionBase(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     kind: Literal["polygon", "line"]
     points: list[list[float]] = Field(description="Normalized [x, y] pairs in 0..1")
-    color: str | None = None
+    color: str | None = Field(None, pattern=HEX_COLOR)
     label_forward: str = Field("A→B", max_length=64)
     label_backward: str = Field("B→A", max_length=64)
+    role: Literal["count", "in", "out", "both"] | None = Field(
+        None, description="Areas: road role for movement counting (in / out / both); count = totals only")
 
     @field_validator("points")
     @classmethod
@@ -53,8 +57,9 @@ class RegionCreate(RegionBase):
 
 class RegionUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
+    role: Literal["count", "in", "out", "both"] | None = None
     points: list[list[float]] | None = None
-    color: str | None = None
+    color: str | None = Field(None, pattern=HEX_COLOR)
     label_forward: str | None = None
     label_backward: str | None = None
 
@@ -99,6 +104,12 @@ class AnalysisSettings(BaseModel):
     min_seconds_in_zone: float = Field(0.3, ge=0.0, le=60.0)
     anchor: Literal["bottom_center", "center"] = Field(
         "bottom_center", description="Vehicle ground point: bottom_center for oblique cameras, center for overhead")
+    start_seconds: float = Field(0.0, ge=0, description="Analyse from this time in the video (s)")
+    end_seconds: float | None = Field(None, gt=0, description="Analyse up to this time (s); default end of video")
+    image_size: Literal[640, 960, 1280, 1920] = Field(
+        640, description="Detector input size; larger finds small/distant vehicles in HD/4K video but is slower")
+    count_stationary: bool = Field(
+        False, description="Also count vehicles that never move (parked cars); off = moving traffic only")
     time_bin_seconds: int = Field(60, ge=1, le=86400)
     generate_annotated_video: bool = False
     annotated_video_layout: Literal["overlay", "pipeline"] = "overlay"
@@ -118,6 +129,12 @@ class AnalysisSettings(BaseModel):
             raise ValueError("use a model file name (e.g. yolo11s.pt or my-lgv-model.pt), not a path")
         return v or None
 
+    @model_validator(mode="after")
+    def _time_range(self) -> AnalysisSettings:
+        if self.end_seconds is not None and self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be after start_seconds")
+        return self
+
     @field_validator("tracker")
     @classmethod
     def _tracker(cls, v: str) -> str:
@@ -134,6 +151,7 @@ class AnalysisOut(ORM):
     message: str | None
     config: dict[str, Any]
     live_counts: dict[str, int]
+    live_breakdown: dict[str, Any] | None = None
     frames_processed: int
     has_annotated_video: bool = False
     created_at: datetime

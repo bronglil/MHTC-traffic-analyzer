@@ -39,7 +39,30 @@ def get_sessionmaker() -> sessionmaker[Session]:
 def init_db() -> None:
     from app import models  # noqa: F401  (register tables)
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Minimal forward migration: add new *nullable* columns to existing tables.
+
+    ``create_all`` never alters existing tables, so databases created by an
+    earlier version would otherwise miss newly added optional columns. Anything
+    beyond adding nullable columns should use a real migration tool (Alembic).
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in existing and col.nullable:
+                    col_type = col.type.compile(dialect=engine.dialect)
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}'))
 
 
 def get_db() -> Iterator[Session]:

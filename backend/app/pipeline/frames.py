@@ -45,18 +45,32 @@ def probe(path: str) -> VideoInfo:
         cap.release()
 
 
-def iter_frames(path: str, stride: int = 1, fps: float | None = None) -> Iterator[Frame]:
-    """Yield every ``stride``-th frame. Frames are decoded sequentially (grab()
-    for skipped frames) which is far more reliable than seeking."""
+def iter_frames(
+    path: str, stride: int = 1, fps: float | None = None, start_frame: int = 0, end_frame: int | None = None
+) -> Iterator[Frame]:
+    """Yield every ``stride``-th frame from ``start_frame`` up to (excluding)
+    ``end_frame``. Frames are decoded sequentially (grab() for skipped frames),
+    which is far more reliable than seeking; only the jump to ``start_frame``
+    seeks, and it is verified against the decoder's reported position."""
     stride = max(1, int(stride))
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise VideoReadError(f"Cannot open video: {path}")
     fps = fps or float(cap.get(cv2.CAP_PROP_FPS)) or 25.0
     index = 0
+    if start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        index = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        if index != start_frame:  # seek not supported/accurate: decode up to the start instead
+            cap.release()
+            cap = cv2.VideoCapture(path)
+            index = 0
+            while index < start_frame and cap.grab():
+                index += 1
+    first = index
     try:
-        while True:
-            if index % stride == 0:
+        while end_frame is None or index < end_frame:
+            if (index - first) % stride == 0:
                 ok, img = cap.read()
                 if not ok:
                     break

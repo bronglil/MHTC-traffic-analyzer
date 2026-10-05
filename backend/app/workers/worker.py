@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_engine, get_sessionmaker, init_db
-from app.models import Analysis, LineCrossingRecord, Video, ZoneCountRecord
+from app.models import Analysis, LineCrossingRecord, MovementRecord, Video, ZoneCountRecord
 from app.pipeline.classifier import ClassRefiner, create_refiner
 from app.pipeline.detector import Detector, MotionDetector, YoloDetector
 from app.pipeline.engine import AnalysisCancelled, PipelineConfig, RegionDef, run_pipeline
@@ -59,12 +59,14 @@ def resolve_model(name: str) -> str:
     return str(local) if local.exists() else name
 
 
-def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None) -> Detector:
+def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None,
+                             image_size: int = 640) -> Detector:
     if kind == "motion":
         return MotionDetector()  # stateful background model: never shared between jobs
-    key = (model_path, confidence, device)
+    key = (model_path, confidence, device, image_size)
     if key not in _detector_cache:
-        _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device)
+        _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device,
+                                            image_size=image_size)
     return _detector_cache[key]
 
 
@@ -120,9 +122,22 @@ def claim_next(db: Session) -> Analysis | None:
     return job
 
 
+def find_ffmpeg() -> str | None:
+    """System ffmpeg, else the static binary shipped by the imageio-ffmpeg wheel."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+
+
 def _transcode_for_web(path: Path) -> None:
     """OpenCV writes mp4v, which browsers will not play; convert to H.264 if ffmpeg exists."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return
     tmp = path.with_suffix(".h264.mp4")
@@ -162,6 +177,9 @@ def process(analysis_id: str) -> None:
         frame_stride=cfg.get("frame_stride", 1),
         min_seconds_in_zone=cfg.get("min_seconds_in_zone", 0.3),
         anchor=cfg.get("anchor", "bottom_center"),
+        count_stationary=cfg.get("count_stationary", False),
+        start_seconds=cfg.get("start_seconds", 0.0),
+        end_seconds=cfg.get("end_seconds"),
         annotated_video_path=str(annotated_path) if annotated_path else None,
         annotated_video_layout=cfg.get("annotated_video_layout", "overlay"),
     )
@@ -188,19 +206,20 @@ def process(analysis_id: str) -> None:
                 )
         return last_cancel_check[1]
 
-    def on_progress(pct: float, frame_index: int, counts: dict[str, int]) -> None:
+    def on_progress(pct: float, frame_index: int, breakdown: dict[str, dict]) -> None:
         with SessionLocal() as db:
             db.execute(
                 update(Analysis)
                 .where(Analysis.id == analysis_id)
-                .values(progress=round(pct, 4), live_counts=counts, frames_processed=frame_index,
+                .values(progress=round(pct, 4), live_counts={k: v["total"] for k, v in breakdown.items()},
+                        live_breakdown=breakdown, frames_processed=frame_index,
                         message=f"Processing frame {frame_index}")
             )
             db.commit()
 
     try:
         detector = detector_factory(detector_kind, cfg.get("model_path") or settings.model_path, det_conf,
-                                    settings.device)
+                                    settings.device, cfg.get("image_size", 640))
         tracker = create_tracker(tracker_kind, fps / max(1, pipeline_cfg.frame_stride), confidence)
         refiner = refiner_factory(classification, height, cfg.get("classifier_model") or settings.classifier_model,
                                   settings.device)
@@ -211,7 +230,8 @@ def process(analysis_id: str) -> None:
         )
         if annotated_path and annotated_path.exists():
             _transcode_for_web(annotated_path)
-        summary = summarize(result.zone_counts, result.line_crossings, cfg.get("time_bin_seconds", 60))
+        summary = summarize(result.zone_counts, result.line_crossings, cfg.get("time_bin_seconds", 60),
+                            result.movements)
         summary["frames_processed"] = result.frames_processed
         summary["video_duration_seconds"] = result.duration_seconds
         summary["processing_seconds"] = round(result.elapsed_seconds, 2)
@@ -219,13 +239,14 @@ def process(analysis_id: str) -> None:
             job = db.get(Analysis, analysis_id)
             db.add_all(ZoneCountRecord(analysis_id=analysis_id, **c) for c in result.zone_counts)
             db.add_all(LineCrossingRecord(analysis_id=analysis_id, **c) for c in result.line_crossings)
+            db.add_all(MovementRecord(analysis_id=analysis_id, **m) for m in result.movements)
             job.summary = summary
             job.status = "completed"
             job.progress = 1.0
             job.frames_processed = result.frames_processed
             job.message = (
-                f"Counted {len(result.zone_counts)} area events and "
-                f"{len(result.line_crossings)} line crossings"
+                f"Counted {len(result.zone_counts)} area events, "
+                f"{len(result.line_crossings)} line crossings, {len(result.movements)} movements"
             )
             job.annotated_video_path = str(annotated_path) if annotated_path and annotated_path.exists() else None
             job.finished_at = datetime.now(UTC)

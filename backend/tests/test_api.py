@@ -43,6 +43,7 @@ def test_full_flow(client, video_file):
         "name": "Left", "kind": "polygon", "points": [[0, 0], [0.5, 0], [0.5, 1], [0, 1]]})
     assert r.status_code == 201
     roi = r.json()
+    assert roi["color"] == "#f59e0b"  # first palette colour, assigned by the server
     r = client.patch(f"/api/videos/{vid}/regions/{roi['id']}", json={"name": "Left lane"})
     assert r.json()["name"] == "Left lane"
     assert client.patch(f"/api/videos/{vid}/regions/{roi['id']}", json={"points": [[0, 0], [1, 1]]}).status_code == 422
@@ -51,9 +52,17 @@ def test_full_flow(client, video_file):
     client.post(f"/api/videos/{vid}/regions", json={
         "name": "Gate", "kind": "line", "points": [[0.5, 0], [0.5, 1]],
         "label_forward": "westbound", "label_backward": "eastbound"})
-    assert len(client.get(f"/api/videos/{vid}").json()["regions"]) == 2
+    regions = client.get(f"/api/videos/{vid}").json()["regions"]
+    assert len(regions) == 2 and regions[0]["color"] != regions[1]["color"]
+    assert client.post(f"/api/videos/{vid}/regions", json={
+        "name": "left lane", "kind": "polygon", "points": [[0, 0], [0.2, 0], [0.2, 0.2]]}).status_code == 409
+    assert client.patch(f"/api/videos/{vid}/regions/{roi['id']}", json={"name": "GATE"}).status_code == 409
+    assert client.patch(f"/api/videos/{vid}/regions/{roi['id']}", json={"color": "red;x"}).status_code == 422
 
     assert client.post(f"/api/videos/{vid}/analyses", json={"vehicle_types": ["plane"]}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"start_seconds": 2, "end_seconds": 1}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"start_seconds": 99}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"image_size": 777}).status_code == 422
     r = client.post(f"/api/videos/{vid}/analyses", json={
         "vehicle_types": ["car", "bus"], "tracker": "iou", "generate_annotated_video": True})
     assert r.status_code == 201, r.text
@@ -74,6 +83,9 @@ def test_full_flow(client, video_file):
     res = client.get(f"/api/analyses/{aid}").json()
     assert res["status"] == "completed", res["message"]
     assert res["has_annotated_video"]
+    assert res["live_breakdown"]["whole_frame"]["by_type"] == {"car": 1, "bus": 1}
+    stages = client.get(f"/api/analyses/{aid}/stages").json()
+    assert stages["live_url"] and client.get(stages["live_url"]).status_code == 200
     areas = {a["name"]: a["total"] for a in res["summary"]["areas"]}
     assert areas == {"Whole Frame": 2, "Left lane": 1}
     assert res["summary"]["lines"][0]["by_direction"] == {"eastbound": 1}
@@ -104,3 +116,16 @@ def test_cancel_queued(client, video_file):
 
     with get_sessionmaker()() as db:
         assert worker.claim_next(db) is None
+
+
+def test_adds_missing_nullable_columns(app_env):
+    """A database created before a nullable column existed is upgraded in place."""
+    from sqlalchemy import inspect, text
+
+    from app.db import get_engine, init_db
+
+    init_db()
+    with get_engine().begin() as conn:
+        conn.execute(text("ALTER TABLE analyses DROP COLUMN live_breakdown"))
+    init_db()
+    assert "live_breakdown" in {c["name"] for c in inspect(get_engine()).get_columns("analyses")}

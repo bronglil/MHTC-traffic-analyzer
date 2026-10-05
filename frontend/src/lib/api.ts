@@ -10,6 +10,7 @@ export interface Region {
   color: string | null;
   label_forward: string;
   label_backward: string;
+  role?: "count" | "in" | "out" | "both" | null;
   created_at: string;
 }
 
@@ -47,12 +48,17 @@ export interface AnalysisSettings {
   time_bin_seconds: number;
   generate_annotated_video: boolean;
   annotated_video_layout: "overlay" | "pipeline";
+  count_stationary?: boolean;
+  start_seconds?: number;
+  end_seconds?: number | null;
+  image_size?: 640 | 960 | 1280 | 1920;
 }
 
 export interface StageSnapshot {
   frame_index: number | null;
   timestamp: number | null;
   stages: { key: string; title: string; url: string; version: number }[];
+  live_url: string | null;
 }
 
 export interface Breakdown {
@@ -85,14 +91,21 @@ export interface Summary {
   processing_seconds: number;
 }
 
+export interface LiveEntry {
+  total: number;
+  by_type: Record<string, number>;
+  by_direction: Record<string, number>;
+}
+
 export interface Analysis {
   id: string;
   video_id: string;
   status: AnalysisStatus;
   progress: number;
   message: string | null;
-  config: AnalysisSettings & { regions: Pick<Region, "id" | "name" | "kind" | "points">[] };
+  config: AnalysisSettings & { regions: Pick<Region, "id" | "name" | "kind" | "points" | "color">[] };
   live_counts: Record<string, number>;
+  live_breakdown?: Record<string, LiveEntry> | null;
   frames_processed: number;
   has_annotated_video: boolean;
   created_at: string;

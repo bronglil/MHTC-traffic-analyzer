@@ -12,9 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.videos import get_video_or_404
+from app.colors import REGION_COLORS
 from app.config import get_settings
 from app.db import get_db, get_sessionmaker
-from app.models import Analysis, line_dict, zone_dict
+from app.models import Analysis, line_dict, movement_dict, zone_dict
 from app.pipeline.annotate import STAGES
 from app.reporting import exporters
 from app.schemas import AnalysisOut, AnalysisResults, AnalysisSettings
@@ -47,11 +48,15 @@ def create_analysis(video_id: str, body: AnalysisSettings, db: Session = Depends
         if unknown:
             raise HTTPException(422, f"Unknown region ids: {sorted(unknown)}")
         regions = [r for r in regions if r.id in wanted]
+    if body.start_seconds >= max(video.duration_seconds, 0.001):
+        raise HTTPException(422, f"start_seconds is past the end of the video ({video.duration_seconds:.1f} s)")
     config = body.model_dump(exclude={"region_ids"})
     config["regions"] = [
         {"id": r.id, "name": r.name, "kind": r.kind, "points": r.points,
+         # regions created before colours were stored get a stable palette slot
+         "color": r.color or REGION_COLORS[i % len(REGION_COLORS)], "role": r.role or "count",
          "label_forward": r.label_forward, "label_backward": r.label_backward}
-        for r in regions
+        for i, r in enumerate(regions)
     ]
     analysis = Analysis(video_id=video_id, config=config, live_counts={}, message="Queued")
     db.add(analysis)
@@ -108,7 +113,8 @@ def list_vehicle_counts(
     rows = [zone_dict(r) for r in a.zone_counts
             if (zone_id is None or r.zone_id == zone_id) and (vehicle_type is None or r.vehicle_type == vehicle_type)]
     return {"total": len(rows), "items": rows[offset: offset + limit],
-            "line_crossings": [line_dict(r) for r in a.line_crossings][:limit]}
+            "line_crossings": [line_dict(r) for r in a.line_crossings][:limit],
+            "movements": [movement_dict(r) for r in a.movements][:limit]}
 
 
 def _meta(a: Analysis) -> dict:
@@ -122,7 +128,8 @@ def _meta(a: Analysis) -> dict:
         "vehicle_types": a.config.get("vehicle_types"),
         "tracker": a.config.get("tracker"),
         "time_bin_seconds": a.config.get("time_bin_seconds"),
-        "regions": [{"id": r["id"], "name": r["name"], "kind": r["kind"]} for r in a.config.get("regions", [])],
+        "regions": [{"id": r["id"], "name": r["name"], "kind": r["kind"], "role": r.get("role")}
+                    for r in a.config.get("regions", [])],
     }
 
 
@@ -137,15 +144,16 @@ def export(
         raise HTTPException(status.HTTP_409_CONFLICT, "Results are available once the analysis has completed")
     zones = [zone_dict(r) for r in a.zone_counts]
     lines = [line_dict(r) for r in a.line_crossings]
+    moves = [movement_dict(r) for r in a.movements]
     stem = f"{Path(a.video.original_name).stem}_{a.id[:8]}"
     meta = _meta(a)
     if format == "json":
-        body, mime, ext = exporters.to_json(meta, a.summary, zones, lines), "application/json", "json"
+        body, mime, ext = exporters.to_json(meta, a.summary, zones, lines, moves), "application/json", "json"
     elif format == "xlsx":
-        body = exporters.to_xlsx(meta, a.summary, zones, lines)
+        body = exporters.to_xlsx(meta, a.summary, zones, lines, moves)
         mime, ext = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
     elif format == "csv_bundle":
-        body, mime, ext = exporters.to_csv_zip(meta, a.summary, zones, lines), "application/zip", "zip"
+        body, mime, ext = exporters.to_csv_zip(meta, a.summary, zones, lines, moves), "application/zip", "zip"
     else:
         body, mime, ext = exporters.to_csv(zones), "text/csv", "csv"
     return Response(body, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
@@ -181,13 +189,17 @@ def list_stages(analysis_id: str, db: Session = Depends(get_db)) -> dict:
         if f.exists():
             items.append({"key": key, "title": title, "url": f"/api/analyses/{analysis_id}/stages/{key}.jpg",
                           "version": int(f.stat().st_mtime_ns // 1_000_000)})
-    return {"frame_index": meta.get("frame_index"), "timestamp": meta.get("timestamp"), "stages": items}
+    live = d / "live.jpg"
+    live_url = (f"/api/analyses/{analysis_id}/stages/live.jpg?v={int(live.stat().st_mtime_ns // 1_000_000)}"
+                if live.exists() else None)
+    return {"frame_index": meta.get("frame_index"), "timestamp": meta.get("timestamp"), "stages": items,
+            "live_url": live_url}
 
 
 @router.get("/api/analyses/{analysis_id}/stages/{key}.jpg")
 def stage_image(analysis_id: str, key: str, db: Session = Depends(get_db)) -> FileResponse:
     _get(analysis_id, db)
-    if key not in dict(STAGES):
+    if key not in dict(STAGES) and key != "live":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown stage")
     f = get_settings().output_dir / analysis_id / "stages" / f"{key}.jpg"
     if not f.exists():
@@ -206,12 +218,13 @@ async def progress_ws(websocket: WebSocket, analysis_id: str) -> None:
         with SessionLocal() as db:
             row = db.execute(
                 select(Analysis.status, Analysis.progress, Analysis.message, Analysis.live_counts,
-                       Analysis.frames_processed).where(Analysis.id == analysis_id)
+                       Analysis.live_breakdown, Analysis.frames_processed).where(Analysis.id == analysis_id)
             ).one_or_none()
         if row is None:
             return None
         return {"status": row.status, "progress": row.progress, "message": row.message,
-                "live_counts": row.live_counts or {}, "frames_processed": row.frames_processed}
+                "live_counts": row.live_counts or {}, "live_breakdown": row.live_breakdown or {},
+                "frames_processed": row.frames_processed}
 
     try:
         while True:

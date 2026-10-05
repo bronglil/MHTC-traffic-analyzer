@@ -4,7 +4,7 @@ import type { KonvaEventObject } from "konva/lib/Node";
 import type { Point, Region, RegionKind } from "../lib/api";
 import { regionColor } from "../lib/vehicles";
 
-export type EditorMode = "select" | RegionKind;
+export type EditorMode = "select" | "rect" | RegionKind;
 
 interface Props {
   width: number;
@@ -25,7 +25,7 @@ const clamp = (v: number) => Math.min(1, Math.max(0, v));
  * Konva overlay for drawing and editing polygon ROIs and counting lines.
  * Regions are stored normalized (0..1) so they are independent of display size.
  *
- * Polygon: click to add points; click the first point, double-click, or press
+ * Rectangle: press and drag over a road. Polygon: click to add points; click the first point, double-click, or press
  * Enter to close. Line: click start and end. Esc cancels; Backspace removes the
  * last point. In select mode drag vertices or whole shapes to edit.
  */
@@ -36,13 +36,40 @@ export default function RegionEditor({
   const [cursor, setCursor] = useState<Point | null>(null);
   // Local copy while dragging so edits feel instant; committed on drag end.
   const [dragPoints, setDragPoints] = useState<{ id: string; points: Point[] } | null>(null);
+  // Rectangle being dragged out: start corner (normalized).
+  const [rectStart, setRectStart] = useState<Point | null>(null);
 
   const toPx = (p: Point) => [p[0] * width, p[1] * height] as const;
   const toNorm = (x: number, y: number): Point => [clamp(x / width), clamp(y / height)];
 
   useEffect(() => {
     setDraft([]);
+    setRectStart(null);
   }, [mode]);
+
+  const pointer = (e: KonvaEventObject<Event>): Point | null => {
+    const pos = e.target.getStage()?.getPointerPosition();
+    return pos ? toNorm(pos.x, pos.y) : null;
+  };
+  const rectDown = (e: KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (mode !== "rect") return;
+    const p = pointer(e);
+    if (p) {
+      setRectStart(p);
+      setCursor(p);
+    }
+  };
+  const rectUp = (e: KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (mode !== "rect" || !rectStart) return;
+    const end = pointer(e) ?? cursor;
+    setRectStart(null);
+    if (!end) return;
+    const [x1, x2] = [Math.min(rectStart[0], end[0]), Math.max(rectStart[0], end[0])];
+    const [y1, y2] = [Math.min(rectStart[1], end[1]), Math.max(rectStart[1], end[1])];
+    // Ignore accidental clicks: need at least ~8px in both directions.
+    if ((x2 - x1) * width < 8 || (y2 - y1) * height < 8) return;
+    onCreate("polygon", [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]);
+  };
 
   const finishPolygon = (pts: Point[]) => {
     if (pts.length >= 3) onCreate("polygon", pts);
@@ -56,6 +83,9 @@ export default function RegionEditor({
         if (draft.length) setDraft([]);
         else onCancelDraw();
       } else if (e.key === "Enter" && mode === "polygon") {
+        // The naming popup opens and focuses its input during this keydown; without
+        // preventDefault the same Enter would submit it with the default name.
+        e.preventDefault();
         finishPolygon(draft);
       } else if (e.key === "Backspace" && draft.length) {
         e.preventDefault();
@@ -73,6 +103,7 @@ export default function RegionEditor({
       if (e.target === e.target.getStage()) onSelect(null);
       return;
     }
+    if (mode === "rect") return; // handled by mouse down / up
     const p = toNorm(pos.x, pos.y);
     if (mode === "line") {
       if (draft.length === 0) setDraft([p]);
@@ -136,7 +167,15 @@ export default function RegionEditor({
       onTap={handleStageClick}
       onDblClick={handleDblClick}
       onMouseMove={handleMove}
-      onMouseLeave={() => setCursor(null)}
+      onTouchMove={handleMove as never}
+      onMouseDown={rectDown}
+      onTouchStart={rectDown}
+      onMouseUp={rectUp}
+      onTouchEnd={rectUp}
+      onMouseLeave={(e) => {
+        if (rectStart) rectUp(e);
+        setCursor(null);
+      }}
       style={{ cursor: drawing ? "crosshair" : "default" }}
     >
       <Layer>
@@ -234,6 +273,22 @@ export default function RegionEditor({
             })}
           </Group>
         )}
+
+        {mode === "rect" && rectStart && cursor && (() => {
+          const [ax, ay] = toPx(rectStart);
+          const [bx, by] = toPx(cursor);
+          return (
+            <Line
+              listening={false}
+              points={[ax, ay, bx, ay, bx, by, ax, by]}
+              closed
+              stroke="#fff"
+              strokeWidth={2}
+              dash={[6, 4]}
+              fill="rgba(255,255,255,0.15)"
+            />
+          );
+        })()}
       </Layer>
     </Stage>
   );

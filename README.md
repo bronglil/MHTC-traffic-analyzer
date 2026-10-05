@@ -35,6 +35,43 @@ and you can also generate an annotated video.
 - Optional **annotated video**: boxes, class, track ID, ROIs, lines, direction
   and running counts.
 
+## Counting specific roads
+
+If the camera shows several roads but you only want some of them:
+
+1. Choose **Draw road (rectangle)** and drag a box over each road you want to
+   count. Use **Draw area (polygon)** for curved or angled roads.
+2. A popup asks for a **name** for each one (e.g. "A40 inbound", "High
+   Street"). Names must be unique per video.
+3. Each road gets its own **colour**, used in the editor, the live view, the
+   annotated video, the counts tiles and the counts drawer.
+4. Once you draw a road, **Whole Frame** is switched off, so only your selected
+   roads are counted. Tick it again to also get a total for the whole picture.
+   Use the checkbox next to a road to leave it out of a run without deleting
+   it.
+
+Every vehicle passing through a selected road is counted in that road, split
+by vehicle type and direction. The rules:
+
+- **Passing through counts, however fast.** A vehicle whose path goes from outside the box, into
+  it and out again is counted, even if it was inside for a single frame or jumped across the box
+  between two frames. A vehicle that never enters the box is not counted.
+- **Hidden for a moment is still one vehicle.** If a vehicle disappears behind a sign, lamp post or
+  another vehicle and comes back with a new tracker ID within 2 s, near where it was heading, it is
+  re-linked to its earlier track and counted once.
+- **Parked or static things are not traffic.** Tracks that never move (parked cars, a bollard
+  misread as a car) are ignored unless **Count parked / stationary vehicles** is ticked.
+- **Analyse part of a video.** Set **From / To (seconds)**, e.g. 0 to 20. Times in the results stay
+  on the video's own clock. The same vehicle can appear in two roads (for
+example, if it turns from one into the other), and it counts once in each.
+While an analysis runs, the **Counts** tab on the right edge of the screen
+opens a drawer with live per-road counts by vehicle type, and it shows the
+final counts afterwards.
+
+*(Optional, API only)* Areas also take a `role` of `in`, `out` or `both`. With
+roles set, origin → destination **movements** (turning counts) are reported
+too.
+
 ## Processing pipeline
 
 ```text
@@ -74,14 +111,30 @@ of its settings and ROIs, so editing ROIs later never changes past results.
 
 ## Quick start (Docker)
 
+You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) or Docker Engine
+with the Compose plugin (Linux). Then:
+
 ```bash
-docker compose up --build
-# open http://localhost:8080
+git clone https://github.com/bronglil/mhtc-traffic-analyzer.git
+cd mhtc-traffic-analyzer
+docker compose up --build        # first build takes ~5–10 min (downloads PyTorch + YOLO weights)
 ```
 
-This starts PostgreSQL, the API, a worker (`--scale worker=N` for more) and
-the web UI. YOLO weights download automatically on first use. Put custom
-weights in the `data` volume under `/data/models/`.
+Open **http://localhost:8080**. Upload a video, draw the roads to count, pick the time range, and click
+**Run analysis**.
+
+| Command | What it does |
+|---|---|
+| `docker compose up -d` | Start in the background (after the first build) |
+| `docker compose logs -f worker` | Watch the analysis worker |
+| `docker compose up -d --scale worker=3` | Process several videos in parallel |
+| `docker compose down` | Stop (videos, results and the database are kept in Docker volumes) |
+| `docker compose down -v` | Stop and **delete** all data |
+
+It runs PostgreSQL, the API, a background worker and the web UI. The default YOLO weights are baked
+into the image. Put custom weights (e.g. an LGV1/LGV2 model) in the `data` volume under `/data/models/`
+and select them in **Advanced settings**. 4K videos work; the detection resolution is chosen
+automatically from the video size.
 
 ## Local development
 
@@ -104,10 +157,22 @@ Configuration is via `TV_*` environment variables (see `backend/app/config.py`):
 ## Tests
 
 ```bash
+# Backend
 cd backend
 pytest                      # everything, including the real-video tests (downloads yolo11n.pt once)
 pytest -m "not model"       # skip the tests that need YOLO weights
+
+# Frontend
+cd frontend
+npm run typecheck           # app + test code
+npm test                    # unit tests (Vitest)
+npm run test:e2e            # browser tests (Playwright) against a real API + fresh database
+                            # first time: npx playwright install chromium
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs all of these on every push.
+
+Backend:
 
 - `tests/test_analyzer.py`: counting rules (once per zone, re-entry, flicker,
   majority-vote type, lines, direction).
@@ -115,7 +180,12 @@ pytest -m "not model"       # skip the tests that need YOLO weights
   size rules, crop-classifier voting.
 - `tests/test_pipeline.py`: the end-to-end pipeline on a synthetic video with
   all three trackers, stage previews, pipeline video and exports.
-- `tests/test_api.py`: upload → ROIs → analysis → WebSocket → exports.
+- `tests/test_api.py`: upload → ROIs (colours, unique names) → analysis →
+  WebSocket → exports.
+- `tests/test_multi_road.py`: a 4-road junction
+  (`tests/data/videos/synthetic_junction.mp4`, regenerate with
+  `tests/data/make_synthetic_junction.py`). Counting only 2 of the 4 roads,
+  each road separately by name and vehicle type, and in/out movements.
 - `tests/test_real_videos.py`: **real footage with hand-counted ground truth**
   (`tests/data/videos/`):
   - `overhead_road.mp4` (MIT): 5 cars over two lanes and a gate. The motion
@@ -124,10 +194,27 @@ pytest -m "not model"       # skip the tests that need YOLO weights
   - `oblique_car_park.mp4` (CC BY 4.0): 2 cars and 2 cyclists among
     pedestrians. YOLO11n + ByteTrack matches the counts, types and directions
     exactly.
+  - `dual_carriageway.mp4` (MHTC-supplied): a pole-mounted camera over a dual carriageway with a
+    slip road. Left carriageway 2 cars (away), slip road 1 car (towards), right carriageway 0. YOLO
+    matches exactly with both trackers at strides 1 and 2. The browser test
+    `frontend/e2e/real-video.spec.ts` checks the same result through the UI.
 
   Add your own survey clips (e.g. with LGV1/LGV2 ground truth) by dropping a
   video and a JSON file into that folder. See
   [docs/vehicle-classification.md](docs/vehicle-classification.md#proving-accuracy-ground-truth-clips).
+
+Frontend:
+
+- `src/lib/__tests__/counts.test.ts`: the per-road counts behind the tiles
+  and drawer (live vs final, Whole Frame on/off), and the area colour palette
+  kept in sync with the backend.
+- `e2e/multi-road.spec.ts`: the full user journey in a real browser. It
+  uploads the 4-road junction, drags rectangles over 2 roads, names them in
+  the popup (duplicate names refused), runs the analysis, and checks the live
+  view, the results table (North Road 2, East Road 3, no other roads), the
+  counts drawer, the area colours, and the CSV/JSON/XLSX exports. It also
+  covers polygon drawing with fast clicks and keyboard safety while the popup
+  is open.
 
 ## API overview
 
