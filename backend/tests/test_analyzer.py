@@ -196,3 +196,57 @@ def test_detection_flickering_inside_box_needs_dwell():
         a.update(f, f, [obj(1, 95 + f * 4, 50)])
     a.finish()
     assert a.zone_counts == []
+
+
+# --- count rules: crossing / entering / present ---------------------------------------
+MID_BOX = ZoneSpec("box", "Box", ((80, 20), (120, 20), (120, 80), (80, 80)))  # inside the 200x100 frame
+
+
+def _scenario(rule):
+    a = TrafficAnalyzer((200, 100), [MID_BOX], count_rule=rule, min_frames_in_zone=3, track_timeout_frames=5)
+    frames = 40
+    for f in range(frames):
+        objs = [
+            obj(1, 20 + f * 5, 50),                         # drives right through the box -> crosses
+            obj(2, 30 + min(f, 15) * 4, 60),                # drives in and parks inside (x stops at 90)
+            obj(3, 100 + (f % 2), 70) if f < 25 else None,  # already inside at the start, sits still
+            obj(4, 40 + f * 2, 50) if f < 15 else None,     # approaches, stops short (x <= 68), never enters
+        ]
+        if 10 <= f < 30:
+            x = 75 + (f - 10) * 3 if f < 20 else 105 - (f - 20) * 3
+            objs.append(obj(5, x, 30))                      # dips in and turns back out the same side
+        a.update(f, f, [o for o in objs if o is not None])
+    a.finish()
+    return sorted(c.track_id for c in a.zone_counts)
+
+
+def test_crossing_counts_only_vehicles_that_come_in_and_leave():
+    # 2 parks inside, 3 was already inside, 4 never enters, 5 backs out the way it came.
+    assert _scenario("crossing") == [1]
+
+
+def test_entering_also_counts_vehicles_that_stay():
+    assert _scenario("entering") == [1, 2, 5]
+
+
+def test_present_counts_anything_seen_inside_long_enough():
+    assert _scenario("present") == [1, 2, 5]  # 3 never moves (stationary filter), 4 never inside
+
+
+def test_crossing_through_picture_edge():
+    """A box touching the bottom of the picture: driving out of view through it is leaving."""
+    edge_box = ZoneSpec("edge", "Edge box", ((60, 50), (140, 50), (140, 100), (60, 100)))
+    a = TrafficAnalyzer((200, 100), [edge_box], count_rule="crossing", track_timeout_frames=3)
+    for f in range(13):                       # comes down from the top and leaves at the bottom edge
+        y = 20 + f * 7
+        a.update(f, f, [TrackedObject(1, 95, y - 10, 105, min(99.5, y), 0.9, "car")])
+    for f in range(13, 20):
+        a.update(f, f, [])
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+
+def test_unknown_count_rule_rejected():
+    import pytest
+
+    with pytest.raises(ValueError):
+        TrafficAnalyzer((100, 100), [WHOLE], count_rule="sometimes")

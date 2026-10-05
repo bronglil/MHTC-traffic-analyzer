@@ -13,7 +13,7 @@ import numpy as np
 
 from app.pipeline.types import Detection, TrackedObject
 
-TRACKER_TYPES = ("bytetrack", "botsort", "iou")
+TRACKER_TYPES = ("bytetrack", "botsort", "iou", "timelapse")
 
 
 class Tracker(Protocol):
@@ -159,7 +159,104 @@ class IoUTracker:
         return out
 
 
+class TimelapseTracker:
+    """Tracker for time-lapse / very low frame-rate footage.
+
+    Between two time-lapse frames a vehicle can move several times its own
+    length, so box overlap (IoU) and Kalman motion models — what ByteTrack and
+    BoT-SORT rely on — no longer connect it. This tracker matches by position
+    with a wide search radius (relative to the vehicle's size, around a
+    constant-velocity prediction) combined with appearance (colour
+    histogram), solved as an optimal assignment.
+    """
+
+    def __init__(self, confidence: float = 0.3, max_age: int = 2, gate: float = 3.0,
+                 appearance_weight: float = 0.5, max_cost: float = 0.75) -> None:
+        import cv2
+
+        self._cv2 = cv2
+        self.confidence = confidence
+        self.max_age = max_age
+        self.gate = gate
+        self.w = appearance_weight
+        self.max_cost = max_cost
+        self._next_id = 1
+        # id -> dict(center, vel, diag, hist, age, type)
+        self._tracks: dict[int, dict] = {}
+
+    def _hist(self, image: np.ndarray | None, d: Detection) -> np.ndarray | None:
+        if image is None:
+            return None
+        cv2 = self._cv2
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = max(0, int(d.x1)), max(0, int(d.y1)), min(w, int(d.x2)), min(h, int(d.y2))
+        if x2 - x1 < 4 or y2 - y1 < 4:
+            return None
+        hsv = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
+        return cv2.normalize(hist, hist).flatten()
+
+    def update(self, detections: list[Detection], image: np.ndarray | None = None) -> list[TrackedObject]:
+        import lap
+
+        dets = [d for d in detections if d.confidence >= self.confidence]
+        centers = [((d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2) for d in dets]
+        diags = [max(1.0, ((d.x2 - d.x1) ** 2 + (d.y2 - d.y1) ** 2) ** 0.5) for d in dets]
+        hists = [self._hist(image, d) for d in dets]
+        ids = list(self._tracks)
+        assigned: dict[int, int] = {}
+        if ids and dets:
+            big = 1e6
+            cost = np.full((len(ids), len(dets)), big)
+            for i, tid in enumerate(ids):
+                t = self._tracks[tid]
+                steps = t["age"] + 1
+                px, py = t["center"][0] + t["vel"][0] * steps, t["center"][1] + t["vel"][1] * steps
+                for j, d in enumerate(dets):
+                    scale = max(t["diag"], diags[j])
+                    dist = ((centers[j][0] - px) ** 2 + (centers[j][1] - py) ** 2) ** 0.5 / scale
+                    if dist > self.gate or max(t["diag"], diags[j]) > 2.5 * min(t["diag"], diags[j]):
+                        continue
+                    app = 0.5
+                    if t["hist"] is not None and hists[j] is not None:
+                        corr = float(self._cv2.compareHist(t["hist"], hists[j], self._cv2.HISTCMP_CORREL))
+                        app = min(1.0, max(0.0, 1.0 - corr))
+                    c = (1 - self.w) * dist / self.gate + self.w * app
+                    if c <= self.max_cost:
+                        cost[i, j] = c
+            _, rows, _ = lap.lapjv(cost, extend_cost=True, cost_limit=self.max_cost)
+            for i, j in enumerate(rows):
+                if j >= 0 and cost[i, j] < big:
+                    assigned[j] = ids[i]
+
+        out: list[TrackedObject] = []
+        seen: set[int] = set()
+        for j, d in enumerate(dets):
+            tid = assigned.get(j)
+            if tid is None:
+                tid = self._next_id
+                self._next_id += 1
+                self._tracks[tid] = {"center": centers[j], "vel": (0.0, 0.0), "diag": diags[j], "hist": hists[j],
+                                     "age": 0}
+            else:
+                t = self._tracks[tid]
+                steps = t["age"] + 1
+                vel = ((centers[j][0] - t["center"][0]) / steps, (centers[j][1] - t["center"][1]) / steps)
+                t.update(center=centers[j], vel=vel, diag=diags[j], age=0,
+                         hist=hists[j] if hists[j] is not None else t["hist"])
+            seen.add(tid)
+            out.append(TrackedObject(tid, d.x1, d.y1, d.x2, d.y2, d.confidence, d.vehicle_type))
+        for tid in list(self._tracks):
+            if tid not in seen:
+                self._tracks[tid]["age"] += 1
+                if self._tracks[tid]["age"] > self.max_age:
+                    del self._tracks[tid]
+        return out
+
+
 def create_tracker(kind: str, frame_rate: float, confidence: float) -> Tracker:
+    if kind == "timelapse":
+        return TimelapseTracker(confidence=confidence)
     if kind == "iou":
         return IoUTracker(max_age=max(1, round(frame_rate)), confidence=confidence)
     return UltralyticsTracker(kind, frame_rate, confidence)

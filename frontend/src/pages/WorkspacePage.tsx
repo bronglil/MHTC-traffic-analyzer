@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   generate_annotated_video: false,
   annotated_video_layout: "overlay",
   count_stationary: false,
+  count_rule: "crossing",
+  footage: "normal",
   start_seconds: 0,
   end_seconds: null,
   image_size: 640,
@@ -298,6 +300,23 @@ export default function WorkspacePage() {
               estimated from vehicle size unless a custom LGV model is configured.
             </p>
 
+            <fieldset>
+              <legend className="label">Count a vehicle when it…</legend>
+              <div className="mt-1 space-y-1.5 text-sm">
+                {([
+                  ["crossing", "crosses the area", "comes in from outside and leaves again"],
+                  ["entering", "enters the area", "comes in from outside, even if it stays"],
+                  ["present", "is seen in the area", "anywhere inside it"],
+                ] as const).map(([value, label, hint]) => (
+                  <label key={value} className="flex items-start gap-2">
+                    <input type="radio" name="count_rule" className="mt-1" checked={settings.count_rule === value}
+                      onChange={() => set("count_rule", value)} />
+                    <span>{label} <span className="block text-xs text-ink-3">{hint}</span></span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
             <div>
               <span className="label">Part of video to analyse (seconds)</span>
               <div className="mt-1 flex items-center gap-2 text-sm">
@@ -316,6 +335,13 @@ export default function WorkspacePage() {
               )}
             </div>
 
+            <Field label="Footage">
+              <select className="input" value={settings.footage}
+                onChange={(e) => set("footage", e.target.value as AnalysisSettings["footage"])}>
+                <option value="normal">Normal speed</option>
+                <option value="timelapse">Time-lapse / very low frame rate</option>
+              </select>
+            </Field>
             <Field label="Camera view">
               <select className="input" value={settings.anchor} onChange={(e) => set("anchor", e.target.value as AnalysisSettings["anchor"])}>
                 <option value="bottom_center">Roadside / pole-mounted (oblique)</option>
@@ -362,7 +388,7 @@ export default function WorkspacePage() {
                 <Field label="Tracker">
                   <select className="input" value={settings.tracker} onChange={(e) => set("tracker", e.target.value)}>
                     {(meta?.trackers ?? ["bytetrack", "botsort", "iou"]).map((t) => (
-                      <option key={t} value={t}>{{ bytetrack: "ByteTrack", botsort: "BoT-SORT", iou: "Simple IoU" }[t] ?? t}</option>
+                      <option key={t} value={t}>{{ bytetrack: "ByteTrack", botsort: "BoT-SORT", iou: "Simple IoU", timelapse: "Time-lapse (position + colour)" }[t] ?? t}</option>
                     ))}
                   </select>
                 </Field>

@@ -178,12 +178,18 @@ def process(analysis_id: str) -> None:
         min_seconds_in_zone=cfg.get("min_seconds_in_zone", 0.3),
         anchor=cfg.get("anchor", "bottom_center"),
         count_stationary=cfg.get("count_stationary", False),
+        # Analyses created before count rules existed keep their original behaviour.
+        count_rule=cfg.get("count_rule", "present"),
         start_seconds=cfg.get("start_seconds", 0.0),
         end_seconds=cfg.get("end_seconds"),
         annotated_video_path=str(annotated_path) if annotated_path else None,
         annotated_video_layout=cfg.get("annotated_video_layout", "overlay"),
     )
     tracker_kind = cfg.get("tracker", settings.default_tracker)
+    if cfg.get("footage") == "timelapse":
+        # Vehicles are visible for only a few frames and jump far between them.
+        tracker_kind = "timelapse"
+        pipeline_cfg.min_frames_in_zone = 2
     confidence = float(cfg.get("confidence", 0.3))
     # ByteTrack/BoT-SORT associate low-confidence boxes in a second stage, so
     # the detector threshold is kept low and `confidence` is applied by the tracker.

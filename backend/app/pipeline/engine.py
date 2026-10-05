@@ -43,6 +43,8 @@ class PipelineConfig:
     include_whole_frame: bool = True
     frame_stride: int = 1
     min_seconds_in_zone: float = 0.3
+    count_rule: str = "present"  # crossing | entering | present (see TrafficAnalyzer)
+    min_frames_in_zone: int | None = None  # overrides min_seconds_in_zone (e.g. 2 for time-lapse)
     anchor: str = "bottom_center"
     count_stationary: bool = False
     start_seconds: float = 0.0  # analyse only this part of the video
@@ -116,10 +118,12 @@ def run_pipeline(
         lines=lines,
         vehicle_types=config.vehicle_types,
         # Dwell threshold is in seconds so it behaves the same at any fps / stride.
-        min_frames_in_zone=max(2, round(config.min_seconds_in_zone * info.fps / max(1, config.frame_stride))),
+        min_frames_in_zone=config.min_frames_in_zone
+        or max(2, round(config.min_seconds_in_zone * info.fps / max(1, config.frame_stride))),
         track_timeout_frames=max(1, int(config.track_timeout_seconds * info.fps)),
         anchor=config.anchor,
         count_stationary=config.count_stationary,
+        count_rule=config.count_rule,
         relink_gap_frames=round(config.relink_gap_seconds * info.fps),
     )
     renderer = StageRenderer(zones, lines, anchor=config.anchor)

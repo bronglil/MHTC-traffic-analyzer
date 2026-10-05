@@ -81,6 +81,7 @@ def test_real_video_counts(spec_path, cfg, tracker_kind, stride):
         frame_stride=stride,
         anchor=cfg.get("anchor", "bottom_center"),
         min_seconds_in_zone=cfg.get("min_seconds_in_zone", 0.3),
+        count_rule=cfg.get("count_rule", "present"),
     )
     result = run_pipeline(
         str(video), pcfg, _detector(cfg),

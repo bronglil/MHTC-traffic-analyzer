@@ -46,6 +46,7 @@ from app.pipeline.types import TrackedObject
 WHOLE_FRAME_ZONE_ID = "whole_frame"
 STATIONARY = "stationary"
 ANCHORS = ("bottom_center", "center")
+COUNT_RULES = ("crossing", "entering", "present")
 # Area roles for movement (origin -> destination) counting.
 ROLES = ("count", "in", "out", "both")
 
@@ -138,6 +139,7 @@ class _TrackState:
     last_seen_frame: int = 0
     first_point: Point | None = None
     max_travel: float = 0.0  # furthest distance from the first position (pixels)
+    at_border: bool = False  # last box touched the picture edge (vehicle driving out of view)
     last_point: Point | None = None
     # Recent (frame, point) samples, used to predict where a lost vehicle went.
     recent: deque[tuple[int, Point]] = field(default_factory=lambda: deque(maxlen=8))
@@ -172,6 +174,7 @@ class TrafficAnalyzer:
         anchor: str = "bottom_center",
         count_stationary: bool = False,
         relink_gap_frames: int = 30,
+        count_rule: str = "present",
     ) -> None:
         """
         :param frame_size: (width, height) in pixels.
@@ -183,10 +186,19 @@ class TrafficAnalyzer:
             by a sign, lamp post or another vehicle) and re-appears as a new track id
             within this many source frames, near where it was heading, is treated as
             the same vehicle. 0 disables re-linking.
+        :param count_rule: when a vehicle counts for a drawn area (see COUNT_RULES):
+            ``crossing`` - it comes in from outside and leaves again;
+            ``entering`` - it comes in from outside (it may stay);
+            ``present`` - it is seen inside (passing through, or for min_frames).
+            The picture's edge counts as "outside" for areas touching it. The
+            whole-frame zone always uses ``present``.
         :param anchor: point of the box used as the vehicle's ground position:
             ``bottom_center`` for oblique/side cameras (where the wheels touch the
             road) or ``center`` for overhead cameras.
         """
+        if count_rule not in COUNT_RULES:
+            raise ValueError(f"count_rule must be one of {COUNT_RULES}")
+        self.count_rule = count_rule
         if anchor not in ANCHORS:
             raise ValueError(f"anchor must be one of {ANCHORS}")
         self.anchor = anchor
@@ -245,14 +257,17 @@ class TrafficAnalyzer:
                 st.max_travel = max(st.max_travel, d)
 
             prev = st.last_point
+            edge = self._touches_border(obj)
+            st.at_border = edge
             for zone in self.zones:
                 inside = zone.polygon is None or point_in_polygon(pt, zone.polygon)
                 visit = st.visits.get(zone.id)
                 if inside:
                     if visit is None:
                         visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, pt)
-                        visit.entered_from_outside = prev is not None
-                        visit.outside_before = prev
+                        # From outside the area - or into view through the picture edge.
+                        visit.entered_from_outside = prev is not None or edge
+                        visit.outside_before = prev if prev is not None else pt
                     visit.frames += 1
                     visit.last_frame = frame_index
                     visit.last_time = timestamp
@@ -334,12 +349,34 @@ class TrafficAnalyzer:
             return STATIONARY
         return compass_direction(start, end)
 
+    def _touches_border(self, obj: TrackedObject) -> bool:
+        w, h = self._size
+        m = 0.01 * max(w, h)
+        return obj.x1 <= m or obj.y1 <= m or obj.x2 >= w - m or obj.y2 >= h - m
+
+    def _close_edge_exits(self, st: _TrackState) -> None:
+        """A track that ended while touching the picture edge drove out of view: for
+        areas it was still inside, that counts as leaving them."""
+        if not st.at_border or st.last_point is None:
+            return
+        for visit in st.visits.values():
+            if visit.last_frame == st.last_seen_frame and not visit.left:
+                visit.left = True
+                start = visit.outside_before or visit.entry_point
+                d = ((st.last_point[0] - start[0]) ** 2 + (st.last_point[1] - start[1]) ** 2) ** 0.5
+                visit.traversal = max(visit.traversal, d)
+
     def _qualifies(self, visit: _ZoneVisit, zone_id: str) -> bool:
-        """Counted if the vehicle passed through the area (entered from outside and
-        left again having really travelled across it, however briefly it was inside)
-        or stayed long enough. The travel requirement stops objects parked or queued
-        on the area's edge from "passing through" on every jitter of their box."""
+        """Whether a visit counts, per ``count_rule``. A vehicle "passes through" when
+        it entered from outside and left again having really travelled across the
+        area, however briefly it was inside; the travel requirement stops objects
+        parked or queued on the area's edge from passing on every jitter of their box."""
         passed = visit.entered_from_outside and visit.left and visit.traversal >= self._pass_dist[zone_id]
+        rule = "present" if self._zone_by_id[zone_id].polygon is None else self.count_rule
+        if rule == "crossing":
+            return passed
+        if rule == "entering":
+            return visit.entered_from_outside and (visit.left or visit.frames >= 2)
         return passed or visit.frames >= self.min_frames_in_zone
 
     def _moved(self, st: _TrackState) -> bool:
@@ -352,6 +389,7 @@ class TrafficAnalyzer:
         if not self._accepts(vtype) or not self._moved(st):
             return
         zone_by_id = {z.id: z for z in self.zones}
+        self._close_edge_exits(st)
         for zone_id, visit in st.visits.items():
             if not self._qualifies(visit, zone_id):
                 continue

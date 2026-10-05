@@ -61,6 +61,7 @@ export default function AnalysisPage() {
           <p className="text-xs text-ink-3">
             {analysis.config.vehicle_types.map((t) => VEHICLE_LABELS[t] ?? t).join(", ")} · {analysis.config.detector ?? "yolo"}{" "}
             detector · {analysis.config.tracker} tracker
+            {analysis.config.count_rule ? ` · counting vehicles that ${{ crossing: "cross", entering: "enter", present: "are seen in" }[analysis.config.count_rule]} each area` : ""}
             {(analysis.config.start_seconds || analysis.config.end_seconds) ? ` · ${formatDuration(analysis.config.start_seconds ?? 0)}–${analysis.config.end_seconds ? formatDuration(analysis.config.end_seconds) : "end"}` : ""} · {analysis.config.classification ?? "size"} classification · started{" "}
             {new Date(analysis.created_at).toLocaleString()}
           </p>

@@ -49,6 +49,8 @@ export interface AnalysisSettings {
   generate_annotated_video: boolean;
   annotated_video_layout: "overlay" | "pipeline";
   count_stationary?: boolean;
+  count_rule?: "crossing" | "entering" | "present";
+  footage?: "normal" | "timelapse";
   start_seconds?: number;
   end_seconds?: number | null;
   image_size?: 640 | 960 | 1280 | 1920;

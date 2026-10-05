@@ -64,7 +64,9 @@ def test_full_flow(client, video_file):
     assert client.post(f"/api/videos/{vid}/analyses", json={"start_seconds": 99}).status_code == 422
     assert client.post(f"/api/videos/{vid}/analyses", json={"image_size": 777}).status_code == 422
     r = client.post(f"/api/videos/{vid}/analyses", json={
-        "vehicle_types": ["car", "bus"], "tracker": "iou", "generate_annotated_video": True})
+        "vehicle_types": ["car", "bus"], "tracker": "iou", "generate_annotated_video": True,
+        # the test car is already inside "Left lane" when the video starts
+        "count_rule": "present"})
     assert r.status_code == 201, r.text
     aid = r.json()["id"]
     assert r.json()["status"] == "queued"
@@ -109,7 +111,10 @@ def test_full_flow(client, video_file):
 
 def test_cancel_queued(client, video_file):
     vid = _upload(client, video_file)["id"]
-    aid = client.post(f"/api/videos/{vid}/analyses", json={}).json()["id"]
+    created = client.post(f"/api/videos/{vid}/analyses", json={}).json()
+    assert created["config"]["count_rule"] == "crossing"  # default: count vehicles crossing drawn areas
+    assert client.post(f"/api/videos/{vid}/analyses", json={"count_rule": "maybe"}).status_code == 422
+    aid = created["id"]
     assert client.post(f"/api/analyses/{aid}/cancel").json()["status"] == "cancelled"
     from app.db import get_sessionmaker
     from app.workers import worker

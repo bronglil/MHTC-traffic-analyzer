@@ -131,12 +131,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--polygon", action="append", metavar="NAME=x,y;x,y;...", help="polygon area (repeatable)")
     p.add_argument("--line", action="append", metavar="NAME=x1,y1,x2,y2", help="counting line (repeatable)")
     p.add_argument("--whole-frame", action="store_true", help="also count the whole picture")
+    p.add_argument("--count", dest="count_rule", choices=["crossing", "entering", "present"], default="crossing",
+                   help="crossing: comes in and leaves the area (default); entering: comes in; present: seen inside")
     p.add_argument("--from", dest="start", type=float, default=0.0, help="start time in seconds")
     p.add_argument("--to", dest="end", type=float, default=None, help="end time in seconds")
     p.add_argument("--detector", choices=["yolo", "motion"], default="yolo")
     p.add_argument("--model", default="yolo11n.pt", help="YOLO weights (file or official name)")
     p.add_argument("--imgsz", type=int, default=None, help="detector resolution (default: from video size)")
-    p.add_argument("--tracker", choices=["bytetrack", "botsort", "iou"], default="bytetrack")
+    p.add_argument("--tracker", choices=["bytetrack", "botsort", "iou", "timelapse"], default="bytetrack")
+    p.add_argument("--timelapse", action="store_true",
+                   help="time-lapse / low frame-rate footage (time-lapse tracker, 2-frame minimum in an area)")
     p.add_argument("--camera", choices=["oblique", "overhead"], default="oblique")
     p.add_argument("--stride", type=int, default=1, help="process every Nth frame")
     p.add_argument("--confidence", type=float, default=0.3)
@@ -162,8 +166,11 @@ def main(argv: list[str] | None = None) -> int:
     imgsz = args.imgsz or (1280 if info.width >= 3000 else 960 if info.width >= 1800 else 640)
     print(f"{args.video}: {info.width}x{info.height} @ {info.fps:.2f} fps, {info.duration:.1f} s")
     print(f"Detector {args.detector}" + (f" ({args.model}, {imgsz}px)" if args.detector == "yolo" else "")
-          + f", tracker {args.tracker}, {args.camera} camera, {args.start:g}-{args.end or info.duration:g} s")
+          + f", tracker {args.tracker}, {args.camera} camera, count rule '{args.count_rule}', "
+          + f"{args.start:g}-{args.end or info.duration:g} s")
 
+    if args.timelapse:
+        args.tracker = "timelapse"
     if args.detector == "motion":
         detector, classification = MotionDetector(), "detector"
     else:
@@ -175,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         frame_stride=args.stride,
         anchor="center" if args.camera == "overhead" else "bottom_center",
         count_stationary=args.count_parked,
+        min_frames_in_zone=2 if args.timelapse else None,
+        count_rule=args.count_rule,
         start_seconds=args.start,
         end_seconds=args.end,
         annotated_video_path=args.annotate,

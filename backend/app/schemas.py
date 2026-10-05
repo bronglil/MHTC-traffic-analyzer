@@ -96,6 +96,11 @@ class AnalysisSettings(BaseModel):
         "yolo", description="yolo: neural detector; motion: background subtraction (fixed cameras, no classes)")
     model_path: str | None = Field(None, description="YOLO weights; default from server settings")
     tracker: str = "bytetrack"
+    count_rule: Literal["crossing", "entering", "present"] = Field(
+        "crossing", description="crossing: comes in and leaves the drawn area; entering: comes in; "
+                                "present: seen inside it")
+    footage: Literal["normal", "timelapse"] = Field(
+        "normal", description="timelapse: vehicles jump far between frames; uses the time-lapse tracker")
     classification: Literal["size", "detector", "classifier"] = Field(
         "size", description="How car/LGV1/LGV2/truck are decided; see docs/vehicle-classification.md")
     classifier_model: str | None = Field(None, description="YOLO classification model for 'classifier' mode")
