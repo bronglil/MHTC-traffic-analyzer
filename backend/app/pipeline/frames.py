@@ -26,6 +26,19 @@ class VideoReadError(RuntimeError):
     pass
 
 
+def _measured_fps(cap: cv2.VideoCapture, samples: int = 30) -> float | None:
+    """Frame rate from the decoded frames' presentation timestamps."""
+    stamps = []
+    for _ in range(samples + 1):
+        if not cap.grab():
+            break
+        stamps.append(cap.get(cv2.CAP_PROP_POS_MSEC))
+    if len(stamps) < 4 or stamps[-1] <= stamps[0]:
+        return None
+    # Average over the whole span: per-frame stamps are often rounded to whole ms.
+    return 1000.0 * (len(stamps) - 1) / (stamps[-1] - stamps[0])
+
+
 def probe(path: str) -> VideoInfo:
     cap = cv2.VideoCapture(path)
     try:
@@ -33,13 +46,21 @@ def probe(path: str) -> VideoInfo:
             raise VideoReadError(f"Cannot open video: {path}")
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 25.0
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
         count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if width <= 0 or height <= 0:
             ok, img = cap.read()
             if not ok:
                 raise VideoReadError(f"Video has no readable frames: {path}")
             height, width = img.shape[:2]
+        if not 1.0 <= fps <= 240.0:
+            # e.g. WebM/Matroska with a 1 ms timebase: OpenCV reports 1000 "fps" and a
+            # frame count in milliseconds. Use the real frame spacing instead.
+            duration = count / fps if fps > 0 and count > 0 else 0.0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            real = _measured_fps(cap)
+            fps = real if real and 1.0 <= real <= 240.0 else 25.0
+            count = int(round(duration * fps)) if duration else 0
         return VideoInfo(width=width, height=height, fps=fps, frame_count=max(count, 0))
     finally:
         cap.release()

@@ -145,3 +145,35 @@ def test_time_range_limits_counting(video_file):
     late = run_pipeline(str(video_file), PipelineConfig(vehicle_types=["car"], regions=[GATE], start_seconds=2.0),
                         FakeDetector(), IoUTracker())
     assert late.line_crossings == []  # crossing happened before the window
+
+
+def test_millisecond_timebase_reports_real_fps(video_file, monkeypatch):
+    """Wikimedia Commons WebM clips make OpenCV report 1000 "fps" and a frame count
+    in milliseconds; probe() must recover the real values from frame timestamps."""
+    import cv2
+
+    from app.pipeline import frames
+
+    real_capture = cv2.VideoCapture
+
+    class MillisecondTimebase:
+        """Wraps a real capture but reports the bogus fps / count such files produce."""
+
+        def __init__(self, *args):
+            self._cap = real_capture(*args)
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return 1000.0
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return 3000.0  # 3.0 s expressed in ms, as OpenCV reports for such files
+            return self._cap.get(prop)
+
+        def __getattr__(self, name):
+            return getattr(self._cap, name)
+
+    monkeypatch.setattr(frames.cv2, "VideoCapture", MillisecondTimebase)
+    info = frames.probe(str(video_file))
+    assert info.fps == pytest.approx(FPS, rel=0.01)
+    assert info.frame_count == 60
+    assert info.duration == pytest.approx(3.0, rel=0.01)

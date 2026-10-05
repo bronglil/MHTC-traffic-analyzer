@@ -20,7 +20,7 @@ from app.schemas import RegionCreate, RegionOut, RegionUpdate, VideoDetail, Vide
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
-ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts"}
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".ogv", ".ogg", ".m4v", ".mpg", ".mpeg", ".ts", ".wmv", ".flv", ".3gp"}
 CHUNK = 1024 * 1024
 
 
