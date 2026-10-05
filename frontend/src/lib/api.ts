@@ -48,6 +48,10 @@ export interface AnalysisSettings {
   time_bin_seconds: number;
   generate_annotated_video: boolean;
   annotated_video_layout: "overlay" | "pipeline";
+  count_stationary?: boolean;
+  start_seconds?: number;
+  end_seconds?: number | null;
+  image_size?: 640 | 960 | 1280 | 1920;
 }
 
 export interface StageSnapshot {

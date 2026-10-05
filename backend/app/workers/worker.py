@@ -59,12 +59,14 @@ def resolve_model(name: str) -> str:
     return str(local) if local.exists() else name
 
 
-def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None) -> Detector:
+def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None,
+                             image_size: int = 640) -> Detector:
     if kind == "motion":
         return MotionDetector()  # stateful background model: never shared between jobs
-    key = (model_path, confidence, device)
+    key = (model_path, confidence, device, image_size)
     if key not in _detector_cache:
-        _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device)
+        _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device,
+                                            image_size=image_size)
     return _detector_cache[key]
 
 
@@ -120,9 +122,22 @@ def claim_next(db: Session) -> Analysis | None:
     return job
 
 
+def find_ffmpeg() -> str | None:
+    """System ffmpeg, else the static binary shipped by the imageio-ffmpeg wheel."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+
+
 def _transcode_for_web(path: Path) -> None:
     """OpenCV writes mp4v, which browsers will not play; convert to H.264 if ffmpeg exists."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return
     tmp = path.with_suffix(".h264.mp4")
@@ -162,6 +177,9 @@ def process(analysis_id: str) -> None:
         frame_stride=cfg.get("frame_stride", 1),
         min_seconds_in_zone=cfg.get("min_seconds_in_zone", 0.3),
         anchor=cfg.get("anchor", "bottom_center"),
+        count_stationary=cfg.get("count_stationary", False),
+        start_seconds=cfg.get("start_seconds", 0.0),
+        end_seconds=cfg.get("end_seconds"),
         annotated_video_path=str(annotated_path) if annotated_path else None,
         annotated_video_layout=cfg.get("annotated_video_layout", "overlay"),
     )
@@ -201,7 +219,7 @@ def process(analysis_id: str) -> None:
 
     try:
         detector = detector_factory(detector_kind, cfg.get("model_path") or settings.model_path, det_conf,
-                                    settings.device)
+                                    settings.device, cfg.get("image_size", 640))
         tracker = create_tracker(tracker_kind, fps / max(1, pipeline_cfg.frame_stride), confidence)
         refiner = refiner_factory(classification, height, cfg.get("classifier_model") or settings.classifier_model,
                                   settings.device)

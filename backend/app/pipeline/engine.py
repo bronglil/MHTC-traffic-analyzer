@@ -44,6 +44,10 @@ class PipelineConfig:
     frame_stride: int = 1
     min_seconds_in_zone: float = 0.3
     anchor: str = "bottom_center"
+    count_stationary: bool = False
+    start_seconds: float = 0.0  # analyse only this part of the video
+    end_seconds: float | None = None
+    relink_gap_seconds: float = 2.0  # max time a vehicle may be hidden (sign, lamp post) and still re-link
     track_timeout_seconds: float = 3.0
     annotated_video_path: str | None = None
     annotated_video_layout: str = "overlay"  # "overlay" | "pipeline"
@@ -115,6 +119,8 @@ def run_pipeline(
         min_frames_in_zone=max(2, round(config.min_seconds_in_zone * info.fps / max(1, config.frame_stride))),
         track_timeout_frames=max(1, int(config.track_timeout_seconds * info.fps)),
         anchor=config.anchor,
+        count_stationary=config.count_stationary,
+        relink_gap_frames=round(config.relink_gap_seconds * info.fps),
     )
     renderer = StageRenderer(zones, lines, anchor=config.anchor)
     annotator = None
@@ -129,9 +135,14 @@ def run_pipeline(
     started = time.monotonic()
     last_report = last_stage = float("-inf")
     processed = 0
-    total = info.frame_count or 0
+    start_f = max(0, int(round(config.start_seconds * info.fps)))
+    end_f = int(round(config.end_seconds * info.fps)) if config.end_seconds else None
+    if info.frame_count:
+        end_f = min(end_f, info.frame_count) if end_f is not None else info.frame_count
+    total = max(0, (end_f or 0) - start_f)
     try:
-        for frame in iter_frames(video_path, stride=config.frame_stride, fps=info.fps):
+        for frame in iter_frames(video_path, stride=config.frame_stride, fps=info.fps, start_frame=start_f,
+                                 end_frame=end_f):
             if should_cancel and should_cancel():
                 raise AnalysisCancelled()
             detections = detector.detect(frame.image)                 # Detection
@@ -157,7 +168,7 @@ def run_pipeline(
 
             if on_progress and now - last_report >= progress_interval:
                 last_report = now
-                pct = min(0.99, (frame.index + 1) / total) if total else 0.0
+                pct = min(0.99, (frame.index + 1 - start_f) / total) if total else 0.0
                 on_progress(pct, frame.index, analyzer.live_breakdown())
     finally:
         if annotator:
@@ -165,7 +176,7 @@ def run_pipeline(
 
     analyzer.finish()
     if on_progress:
-        on_progress(1.0, total, analyzer.live_breakdown())
+        on_progress(1.0, (end_f or start_f + processed) - 1, analyzer.live_breakdown())
     return PipelineResult(
         zone_counts=[asdict(c) for c in analyzer.zone_counts],
         line_crossings=[asdict(c) for c in analyzer.line_crossings],

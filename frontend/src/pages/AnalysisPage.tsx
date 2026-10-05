@@ -60,7 +60,8 @@ export default function AnalysisPage() {
           </h1>
           <p className="text-xs text-ink-3">
             {analysis.config.vehicle_types.map((t) => VEHICLE_LABELS[t] ?? t).join(", ")} · {analysis.config.detector ?? "yolo"}{" "}
-            detector · {analysis.config.tracker} tracker · {analysis.config.classification ?? "size"} classification · started{" "}
+            detector · {analysis.config.tracker} tracker
+            {(analysis.config.start_seconds || analysis.config.end_seconds) ? ` · ${formatDuration(analysis.config.start_seconds ?? 0)}–${analysis.config.end_seconds ? formatDuration(analysis.config.end_seconds) : "end"}` : ""} · {analysis.config.classification ?? "size"} classification · started{" "}
             {new Date(analysis.created_at).toLocaleString()}
           </p>
         </div>

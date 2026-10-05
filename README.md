@@ -51,7 +51,18 @@ If the camera shows several roads but you only want some of them:
    it.
 
 Every vehicle passing through a selected road is counted in that road, split
-by vehicle type and direction. The same vehicle can appear in two roads (for
+by vehicle type and direction. The rules:
+
+- **Passing through counts, however fast.** A vehicle whose path goes from outside the box, into
+  it and out again is counted, even if it was inside for a single frame or jumped across the box
+  between two frames. A vehicle that never enters the box is not counted.
+- **Hidden for a moment is still one vehicle.** If a vehicle disappears behind a sign, lamp post or
+  another vehicle and comes back with a new tracker ID within 2 s, near where it was heading, it is
+  re-linked to its earlier track and counted once.
+- **Parked or static things are not traffic.** Tracks that never move (parked cars, a bollard
+  misread as a car) are ignored unless **Count parked / stationary vehicles** is ticked.
+- **Analyse part of a video.** Set **From / To (seconds)**, e.g. 0 to 20. Times in the results stay
+  on the video's own clock. The same vehicle can appear in two roads (for
 example, if it turns from one into the other), and it counts once in each.
 While an analysis runs, the **Counts** tab on the right edge of the screen
 opens a drawer with live per-road counts by vehicle type, and it shows the
@@ -100,14 +111,30 @@ of its settings and ROIs, so editing ROIs later never changes past results.
 
 ## Quick start (Docker)
 
+You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows / macOS) or Docker Engine
+with the Compose plugin (Linux). Then:
+
 ```bash
-docker compose up --build
-# open http://localhost:8080
+git clone https://github.com/bronglil/mhtc-traffic-analyzer.git
+cd mhtc-traffic-analyzer
+docker compose up --build        # first build takes ~5–10 min (downloads PyTorch + YOLO weights)
 ```
 
-This starts PostgreSQL, the API, a worker (`--scale worker=N` for more) and
-the web UI. YOLO weights download automatically on first use. Put custom
-weights in the `data` volume under `/data/models/`.
+Open **http://localhost:8080**. Upload a video, draw the roads to count, pick the time range, and click
+**Run analysis**.
+
+| Command | What it does |
+|---|---|
+| `docker compose up -d` | Start in the background (after the first build) |
+| `docker compose logs -f worker` | Watch the analysis worker |
+| `docker compose up -d --scale worker=3` | Process several videos in parallel |
+| `docker compose down` | Stop (videos, results and the database are kept in Docker volumes) |
+| `docker compose down -v` | Stop and **delete** all data |
+
+It runs PostgreSQL, the API, a background worker and the web UI. The default YOLO weights are baked
+into the image. Put custom weights (e.g. an LGV1/LGV2 model) in the `data` volume under `/data/models/`
+and select them in **Advanced settings**. 4K videos work; the detection resolution is chosen
+automatically from the video size.
 
 ## Local development
 
@@ -167,6 +194,10 @@ Backend:
   - `oblique_car_park.mp4` (CC BY 4.0): 2 cars and 2 cyclists among
     pedestrians. YOLO11n + ByteTrack matches the counts, types and directions
     exactly.
+  - `dual_carriageway.mp4` (MHTC-supplied): a pole-mounted camera over a dual carriageway with a
+    slip road. Left carriageway 2 cars (away), slip road 1 car (towards), right carriageway 0. YOLO
+    matches exactly with both trackers at strides 1 and 2. The browser test
+    `frontend/e2e/real-video.spec.ts` checks the same result through the UI.
 
   Add your own survey clips (e.g. with LGV1/LGV2 ground truth) by dropping a
   video and a JSON file into that folder. See

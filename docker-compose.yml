@@ -15,19 +15,21 @@ services:
 
   api:
     build: ./backend
+    image: traffic-vision-backend:latest
     environment: &backend-env
       TV_DATABASE_URL: postgresql+psycopg://traffic:traffic@db:5432/traffic_vision
       TV_DATA_DIR: /data
       TV_EMBEDDED_WORKER: "false"
       TV_CORS_ORIGINS: '["http://localhost:8080"]'
-      # TV_MODEL_PATH: mhtc-vehicles.pt        # custom detector in /data/models
+      # TV_MODEL_PATH: mhtc-vehicles.pt        # custom detector in /data/models (default: yolo11n.pt baked in)
       # TV_CLASSIFIER_MODEL: mhtc-vehicle-cls.pt
     volumes: [data:/data]
     depends_on:
       db: {condition: service_healthy}
 
   worker:
-    build: ./backend
+    build: ./backend                       # same image as the API; the second build is a cache hit
+    image: traffic-vision-backend:latest
     command: ["python", "-m", "app.workers.worker"]
     environment: *backend-env
     volumes: [data:/data]
@@ -39,6 +41,7 @@ services:
 
   web:
     build: ./frontend
+    image: traffic-vision-web:latest
     ports: ["8080:80"]
     depends_on: [api]
 

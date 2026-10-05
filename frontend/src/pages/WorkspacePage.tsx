@@ -31,6 +31,10 @@ const DEFAULT_SETTINGS: AnalysisSettings = {
   time_bin_seconds: 60,
   generate_annotated_video: false,
   annotated_video_layout: "overlay",
+  count_stationary: false,
+  start_seconds: 0,
+  end_seconds: null,
+  image_size: 640,
 };
 
 /** A time period that gives a readable number of bars for the video length. */
@@ -65,7 +69,12 @@ export default function WorkspacePage() {
     api.getVideo(videoId).then((v) => {
       setVideo(v);
       setRegions(v.regions);
-      setSettings((s) => ({ ...s, time_bin_seconds: defaultTimeBin(v.duration_seconds) }));
+      setSettings((s) => ({
+        ...s,
+        time_bin_seconds: defaultTimeBin(v.duration_seconds),
+        // Small/distant vehicles vanish when a 4K frame is shrunk to 640 px.
+        image_size: v.width >= 3000 ? 1280 : v.width >= 1800 ? 960 : 640,
+      }));
     }).catch(fail);
     api.meta().then(setMeta).catch(() => undefined);
     loadAnalyses();
@@ -289,6 +298,24 @@ export default function WorkspacePage() {
               estimated from vehicle size unless a custom LGV model is configured.
             </p>
 
+            <div>
+              <span className="label">Part of video to analyse (seconds)</span>
+              <div className="mt-1 flex items-center gap-2 text-sm">
+                <input type="number" min={0} step={0.5} className="input w-24" aria-label="From (seconds)"
+                  value={settings.start_seconds ?? 0}
+                  onChange={(e) => set("start_seconds", Math.max(0, Number(e.target.value) || 0))} />
+                <span className="text-ink-3">to</span>
+                <input type="number" min={0} step={0.5} className="input w-24" aria-label="To (seconds)"
+                  placeholder={video.duration_seconds.toFixed(1)}
+                  value={settings.end_seconds ?? ""}
+                  onChange={(e) => set("end_seconds", e.target.value === "" ? null : Math.max(0, Number(e.target.value)))} />
+                <span className="text-xs text-ink-3">of {formatDuration(video.duration_seconds)}</span>
+              </div>
+              {settings.end_seconds != null && settings.end_seconds <= (settings.start_seconds ?? 0) && (
+                <p className="mt-1 text-xs text-red-600">“To” must be after “From”.</p>
+              )}
+            </div>
+
             <Field label="Camera view">
               <select className="input" value={settings.anchor} onChange={(e) => set("anchor", e.target.value as AnalysisSettings["anchor"])}>
                 <option value="bottom_center">Roadside / pole-mounted (oblique)</option>
@@ -323,6 +350,15 @@ export default function WorkspacePage() {
                       onChange={(e) => set("classifier_model", e.target.value || null)} />
                   </Field>
                 )}
+                <Field label="Detection resolution">
+                  <select className="input" value={settings.image_size ?? 640}
+                    onChange={(e) => set("image_size", Number(e.target.value) as AnalysisSettings["image_size"])}>
+                    <option value={640}>640 px — fastest (SD / near vehicles)</option>
+                    <option value={960}>960 px — HD video</option>
+                    <option value={1280}>1280 px — 4K / distant vehicles</option>
+                    <option value={1920}>1920 px — 4K, small vehicles (slow)</option>
+                  </select>
+                </Field>
                 <Field label="Tracker">
                   <select className="input" value={settings.tracker} onChange={(e) => set("tracker", e.target.value)}>
                     {(meta?.trackers ?? ["bytetrack", "botsort", "iou"]).map((t) => (
@@ -359,6 +395,14 @@ export default function WorkspacePage() {
               </div>
             </details>
 
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={!!settings.count_stationary}
+                onChange={(e) => set("count_stationary", e.target.checked)} />
+              <span>
+                Count parked / stationary vehicles
+                <span className="block text-xs text-ink-3">Off: only vehicles that move through a road are counted</span>
+              </span>
+            </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={settings.generate_annotated_video}
                 onChange={(e) => set("generate_annotated_video", e.target.checked)} />
@@ -376,7 +420,8 @@ export default function WorkspacePage() {
               </div>
             )}
 
-            <button className="btn btn-primary w-full py-2" disabled={submitting || settings.vehicle_types.length === 0}
+            <button className="btn btn-primary w-full py-2" disabled={submitting || settings.vehicle_types.length === 0 ||
+                (settings.end_seconds != null && settings.end_seconds <= (settings.start_seconds ?? 0))}
               onClick={run}>
               {submitting ? "Submitting…" : "Run analysis"}
             </button>

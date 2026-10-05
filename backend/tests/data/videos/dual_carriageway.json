@@ -1,0 +1,159 @@
+{
+  "video": "dual_carriageway.mp4",
+  "source": "Supplied by MHTC (uploaded survey-style clip 5765431-hd_1366_586_30fps.mp4), audio removed and re-encoded to H.264",
+  "license": "Provided by the project owner for testing",
+  "description": "Pole-mounted camera over a dual carriageway with a slip road; 11.6 s, 1366x586 @ 29.97 fps. Three roads are visible: the left carriageway (traffic away from the camera), the right main carriageway (towards the camera, empty) and a slip road beyond the railing (towards the camera). Distant traffic beyond the bend at the horizon is outside every road outline and must not be counted.",
+  "camera": "oblique",
+  "ground_truth_method": "Manual review of every 15th frame plus full-resolution crops of the far end every 20th frame.",
+  "vehicles": [
+    {
+      "id": 1,
+      "type": "car",
+      "colour": "silver",
+      "road": "Left carriageway",
+      "heading": "away (N)",
+      "frames": [
+        0,
+        200
+      ]
+    },
+    {
+      "id": 2,
+      "type": "car",
+      "colour": "dark grey",
+      "road": "Left carriageway",
+      "heading": "away (N)",
+      "frames": [
+        125,
+        300
+      ]
+    },
+    {
+      "id": 3,
+      "type": "car",
+      "colour": "red",
+      "road": "Slip road",
+      "heading": "towards (SE)",
+      "frames": [
+        0,
+        290
+      ]
+    }
+  ],
+  "regions": [
+    {
+      "id": "left",
+      "name": "Left carriageway",
+      "kind": "polygon",
+      "points": [
+        [
+          0.3441,
+          0.0768
+        ],
+        [
+          0.4283,
+          0.0768
+        ],
+        [
+          0.4392,
+          1.0
+        ],
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.7509
+        ]
+      ]
+    },
+    {
+      "id": "main",
+      "name": "Right carriageway",
+      "kind": "polygon",
+      "points": [
+        [
+          0.4539,
+          0.2048
+        ],
+        [
+          0.5857,
+          0.2048
+        ],
+        [
+          0.9444,
+          1.0
+        ],
+        [
+          0.5454,
+          1.0
+        ]
+      ]
+    },
+    {
+      "id": "slip",
+      "name": "Slip road",
+      "kind": "polygon",
+      "points": [
+        [
+          0.5783,
+          0.1195
+        ],
+        [
+          1.0,
+          0.4437
+        ],
+        [
+          1.0,
+          0.7338
+        ],
+        [
+          0.6149,
+          0.256
+        ]
+      ]
+    }
+  ],
+  "expected": {
+    "areas": {
+      "Left carriageway": 2,
+      "Right carriageway": 0,
+      "Slip road": 1
+    },
+    "directions": {
+      "Left carriageway": {
+        "N": 2
+      },
+      "Slip road": {
+        "SE": 1
+      }
+    },
+    "types": {
+      "Left carriageway": {
+        "car": 2
+      },
+      "Slip road": {
+        "car": 1
+      }
+    }
+  },
+  "configs": [
+    {
+      "name": "yolo11n",
+      "detector": "yolo",
+      "model": "yolo11n.pt",
+      "classification": "size",
+      "anchor": "bottom_center",
+      "trackers": [
+        "bytetrack",
+        "botsort"
+      ],
+      "strides": [
+        1,
+        2
+      ],
+      "tolerance": 0
+    }
+  ]
+}

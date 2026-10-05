@@ -104,6 +104,12 @@ class AnalysisSettings(BaseModel):
     min_seconds_in_zone: float = Field(0.3, ge=0.0, le=60.0)
     anchor: Literal["bottom_center", "center"] = Field(
         "bottom_center", description="Vehicle ground point: bottom_center for oblique cameras, center for overhead")
+    start_seconds: float = Field(0.0, ge=0, description="Analyse from this time in the video (s)")
+    end_seconds: float | None = Field(None, gt=0, description="Analyse up to this time (s); default end of video")
+    image_size: Literal[640, 960, 1280, 1920] = Field(
+        640, description="Detector input size; larger finds small/distant vehicles in HD/4K video but is slower")
+    count_stationary: bool = Field(
+        False, description="Also count vehicles that never move (parked cars); off = moving traffic only")
     time_bin_seconds: int = Field(60, ge=1, le=86400)
     generate_annotated_video: bool = False
     annotated_video_layout: Literal["overlay", "pipeline"] = "overlay"
@@ -122,6 +128,12 @@ class AnalysisSettings(BaseModel):
         if v and not MODEL_NAME_RE.match(v):
             raise ValueError("use a model file name (e.g. yolo11s.pt or my-lgv-model.pt), not a path")
         return v or None
+
+    @model_validator(mode="after")
+    def _time_range(self) -> AnalysisSettings:
+        if self.end_seconds is not None and self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be after start_seconds")
+        return self
 
     @field_validator("tracker")
     @classmethod

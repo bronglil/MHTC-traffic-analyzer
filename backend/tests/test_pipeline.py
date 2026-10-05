@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 import json
 import zipfile
 
@@ -113,3 +114,34 @@ def test_stage_previews_and_pipeline_video(video_file, tmp_path):
     assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == 60
     assert (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))) == (960, 412)
     cap.release()
+
+
+def test_time_range_seeks_to_exact_frame():
+    import numpy as np
+
+    from app.pipeline.frames import iter_frames
+
+    video = Path(__file__).parent / "data" / "videos" / "dual_carriageway.mp4"  # real H.264 with keyframe gaps
+    sequential = {f.index: f.image for f in iter_frames(str(video)) if 140 <= f.index < 150}
+    ranged = list(iter_frames(str(video), start_frame=140, end_frame=150))
+    assert [f.index for f in ranged] == list(range(140, 150))
+    for f in ranged:
+        assert np.array_equal(f.image, sequential[f.index])
+    assert [f.index for f in iter_frames(str(video), stride=3, start_frame=10, end_frame=20)] == [10, 13, 16, 19]
+
+
+def test_time_range_limits_counting(video_file):
+    # Car (left->right) and bus (top->bottom) are both visible for the whole 3 s clip;
+    # analysing only 1.0-2.0 s processes 20 frames and stamps times on the video clock.
+    progress = []
+    cfg = PipelineConfig(vehicle_types=["car", "bus"], regions=[GATE], start_seconds=1.0, end_seconds=2.0)
+    result = run_pipeline(str(video_file), cfg, FakeDetector(), IoUTracker(),
+                          on_progress=lambda p, f, c: progress.append(p), progress_interval=0)
+    assert result.frames_processed == 20
+    assert all(1.0 <= c["first_time"] < 2.0 for c in result.zone_counts)
+    assert progress[-1] == 1.0 and max(progress[:-1]) <= 0.99
+    # The car crosses the centre gate at ~1.5 s, inside the window -> still counted.
+    assert [lc["direction"] for lc in result.line_crossings] == ["eastbound"]
+    late = run_pipeline(str(video_file), PipelineConfig(vehicle_types=["car"], regions=[GATE], start_seconds=2.0),
+                        FakeDetector(), IoUTracker())
+    assert late.line_crossings == []  # crossing happened before the window

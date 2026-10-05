@@ -48,6 +48,8 @@ def create_analysis(video_id: str, body: AnalysisSettings, db: Session = Depends
         if unknown:
             raise HTTPException(422, f"Unknown region ids: {sorted(unknown)}")
         regions = [r for r in regions if r.id in wanted]
+    if body.start_seconds >= max(video.duration_seconds, 0.001):
+        raise HTTPException(422, f"start_seconds is past the end of the video ({video.duration_seconds:.1f} s)")
     config = body.model_dump(exclude={"region_ids"})
     config["regions"] = [
         {"id": r.id, "name": r.name, "kind": r.kind, "points": r.points,

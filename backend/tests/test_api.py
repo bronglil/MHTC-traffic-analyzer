@@ -60,6 +60,9 @@ def test_full_flow(client, video_file):
     assert client.patch(f"/api/videos/{vid}/regions/{roi['id']}", json={"color": "red;x"}).status_code == 422
 
     assert client.post(f"/api/videos/{vid}/analyses", json={"vehicle_types": ["plane"]}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"start_seconds": 2, "end_seconds": 1}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"start_seconds": 99}).status_code == 422
+    assert client.post(f"/api/videos/{vid}/analyses", json={"image_size": 777}).status_code == 422
     r = client.post(f"/api/videos/{vid}/analyses", json={
         "vehicle_types": ["car", "bus"], "tracker": "iou", "generate_annotated_video": True})
     assert r.status_code == 201, r.text
