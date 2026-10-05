@@ -6,7 +6,7 @@ lines, choose vehicle types, and get unique-vehicle counts by **area**, **vehicl
 type**, **direction** and **time period**. Results export as CSV, XLSX or JSON,
 and you can also generate an annotated video.
 
-![Analysis results](docs/analysis-results.png)
+![Analysis results](docs/analysis-full-page.png)
 
 ## Features
 
