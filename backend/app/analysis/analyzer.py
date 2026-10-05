@@ -124,7 +124,9 @@ class _ZoneVisit:
     exit_point: Point = (0.0, 0.0)
     frames: int = 0
     entered_from_outside: bool = False  # the track was seen outside before entering
-    left: bool = False  # ...and seen outside again afterwards: it passed through
+    left: bool = False  # ...and seen outside again afterwards
+    outside_before: Point | None = None  # last position outside, just before entering
+    traversal: float = 0.0  # distance from outside_before to the furthest exit position
 
 
 @dataclass
@@ -206,6 +208,15 @@ class TrafficAnalyzer:
         self.line_crossings: list[LineCrossing] = []
         self.movements: list[Movement] = []
         self._zone_by_id = {z.id: z for z in self.zones}
+        # Distance a vehicle must travel across an area to count as passing through it:
+        # ~3% of the frame diagonal, or half the area's narrow side for small boxes.
+        self._pass_dist: dict[str, float] = {}
+        for z in self.zones:
+            if z.polygon is None:
+                self._pass_dist[z.id] = self.min_disp
+            else:
+                xs, ys = [p[0] for p in z.polygon], [p[1] for p in z.polygon]
+                self._pass_dist[z.id] = max(6.0, min(self.min_disp, 0.5 * min(max(xs) - min(xs), max(ys) - min(ys))))
 
     # ------------------------------------------------------------------ update
     def update(self, frame_index: int, timestamp: float, objects: Iterable[TrackedObject]) -> None:
@@ -241,16 +252,22 @@ class TrafficAnalyzer:
                     if visit is None:
                         visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, pt)
                         visit.entered_from_outside = prev is not None
+                        visit.outside_before = prev
                     visit.frames += 1
                     visit.last_frame = frame_index
                     visit.last_time = timestamp
                     visit.exit_point = pt
                 elif visit is not None:
                     visit.left = True
+                    if visit.outside_before is not None:
+                        d = ((pt[0] - visit.outside_before[0]) ** 2 + (pt[1] - visit.outside_before[1]) ** 2) ** 0.5
+                        visit.traversal = max(visit.traversal, d)
                 elif prev is not None and _segment_crosses(prev, pt, zone.polygon):
                     # Fast vehicle (or frame stride) jumped right across the area between samples.
                     visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, prev, frame_index, timestamp, pt)
                     visit.entered_from_outside = visit.left = True
+                    visit.outside_before = prev
+                    visit.traversal = ((pt[0] - prev[0]) ** 2 + (pt[1] - prev[1]) ** 2) ** 0.5
 
             if prev is not None:
                 for line in self.lines:
@@ -317,10 +334,13 @@ class TrafficAnalyzer:
             return STATIONARY
         return compass_direction(start, end)
 
-    def _qualifies(self, visit: _ZoneVisit) -> bool:
+    def _qualifies(self, visit: _ZoneVisit, zone_id: str) -> bool:
         """Counted if the vehicle passed through the area (entered from outside and
-        left again, however briefly it was inside) or stayed long enough."""
-        return (visit.entered_from_outside and visit.left) or visit.frames >= self.min_frames_in_zone
+        left again having really travelled across it, however briefly it was inside)
+        or stayed long enough. The travel requirement stops objects parked or queued
+        on the area's edge from "passing through" on every jitter of their box."""
+        passed = visit.entered_from_outside and visit.left and visit.traversal >= self._pass_dist[zone_id]
+        return passed or visit.frames >= self.min_frames_in_zone
 
     def _moved(self, st: _TrackState) -> bool:
         return self.count_stationary or st.max_travel >= self.min_disp
@@ -333,7 +353,7 @@ class TrafficAnalyzer:
             return
         zone_by_id = {z.id: z for z in self.zones}
         for zone_id, visit in st.visits.items():
-            if not self._qualifies(visit):
+            if not self._qualifies(visit, zone_id):
                 continue
             zone = zone_by_id[zone_id]
             self.zone_counts.append(
@@ -377,7 +397,7 @@ class TrafficAnalyzer:
         """(origin zone, visit), (destination zone, visit) or None."""
         visits = [
             (self._zone_by_id[zid], v) for zid, v in st.visits.items()
-            if self._qualifies(v) and self._zone_by_id[zid].role != "count"
+            if self._qualifies(v, zid) and self._zone_by_id[zid].role != "count"
             and self._zone_by_id[zid].polygon is not None
         ]
         origins = [zv for zv in visits if zv[0].role in ("in", "both")]
@@ -421,7 +441,7 @@ class TrafficAnalyzer:
                 continue
             vtype = st.vehicle_type
             for zone_id, visit in st.visits.items():
-                if self._qualifies(visit):
+                if self._qualifies(visit, zone_id):
                     add(zone_id, vtype, self._direction(visit.entry_point, visit.exit_point))
             for line_id, (_, _, forward) in st.crossings.items():
                 ln = line_by_id[line_id]
