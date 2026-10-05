@@ -4,7 +4,14 @@ import type { KonvaEventObject } from "konva/lib/Node";
 import type { Point, Region, RegionKind } from "../lib/api";
 import { regionColor } from "../lib/vehicles";
 
+/** "select": click a shape to select it, drag it or its points to edit.
+ *  "rect" / "polygon" / "line": drawing tools. */
 export type EditorMode = "select" | "rect" | RegionKind;
+
+// Drawing feedback: translucent red, so the shape being drawn stands out from saved areas.
+const DRAW_STROKE = "#ef4444";
+const DRAW_FILL = "rgba(239, 68, 68, 0.28)";
+const MIN_RECT_PX = 20;
 
 interface Props {
   width: number;
@@ -67,7 +74,8 @@ export default function RegionEditor({
     const [x1, x2] = [Math.min(rectStart[0], end[0]), Math.max(rectStart[0], end[0])];
     const [y1, y2] = [Math.min(rectStart[1], end[1]), Math.max(rectStart[1], end[1])];
     // Ignore accidental clicks: need at least ~8px in both directions.
-    if ((x2 - x1) * width < 8 || (y2 - y1) * height < 8) return;
+    // Ignore accidental clicks / tiny drags.
+    if ((x2 - x1) * width < MIN_RECT_PX || (y2 - y1) * height < MIN_RECT_PX) return;
     onCreate("polygon", [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]);
   };
 
@@ -157,7 +165,8 @@ export default function RegionEditor({
     [regions, dragPoints],
   );
 
-  const drawing = mode !== "select";
+  const drawing = mode === "rect" || mode === "polygon" || mode === "line";
+  const editing = mode === "select";
 
   return (
     <Stage
@@ -176,14 +185,14 @@ export default function RegionEditor({
         if (rectStart) rectUp(e);
         setCursor(null);
       }}
-      style={{ cursor: drawing ? "crosshair" : "default" }}
+      style={{ cursor: drawing ? "crosshair" : editing ? "pointer" : "default" }}
     >
       <Layer>
         {shapes.map(({ region, color, points }) => {
           const flat = points.flatMap((p) => toPx(p));
           const selected = region.id === selectedId;
           const select = (e: KonvaEventObject<Event>) => {
-            if (drawing) return;
+            if (!editing) return;
             e.cancelBubble = true;
             onSelect(region.id);
           };
@@ -191,7 +200,7 @@ export default function RegionEditor({
           return (
             <Group
               key={region.id}
-              draggable={selected && !drawing}
+              draggable={selected && editing}
               onDragEnd={(e) => {
                 // Vertex handle drags bubble up here too; only handle whole-shape drags.
                 if (e.target !== e.currentTarget) return;
@@ -208,7 +217,7 @@ export default function RegionEditor({
                 stroke={color}
                 strokeWidth={selected ? 3 : 2}
                 hitStrokeWidth={14}
-                listening={!drawing}
+                listening={editing}
                 onClick={select}
                 onTap={select}
               />
@@ -216,7 +225,7 @@ export default function RegionEditor({
                 label={region.label_forward} />}
               <Text x={lx + 6} y={ly + 6} text={region.name} fontSize={13} fontStyle="bold" fill="#fff"
                 shadowColor="#000" shadowBlur={4} shadowOpacity={0.9} listening={false} />
-              {selected && !drawing &&
+              {selected && editing &&
                 points.map((p, idx) => {
                   const [x, y] = toPx(p);
                   return (
@@ -261,7 +270,7 @@ export default function RegionEditor({
           <Group listening={false}>
             <Line
               points={[...draft, ...(cursor ? [cursor] : [])].flatMap((p) => toPx(p))}
-              stroke="#fff"
+              stroke={DRAW_STROKE}
               strokeWidth={2}
               dash={[6, 4]}
               closed={false}
@@ -282,10 +291,10 @@ export default function RegionEditor({
               listening={false}
               points={[ax, ay, bx, ay, bx, by, ax, by]}
               closed
-              stroke="#fff"
+              stroke={DRAW_STROKE}
               strokeWidth={2}
               dash={[6, 4]}
-              fill="rgba(255,255,255,0.15)"
+              fill={DRAW_FILL}
             />
           );
         })()}

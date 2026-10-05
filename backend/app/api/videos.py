@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -16,7 +17,16 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import Region, Video
 from app.pipeline.frames import VideoReadError, probe
-from app.schemas import RegionCreate, RegionOut, RegionUpdate, VideoDetail, VideoOut
+from app.schemas import (
+    CopyRegionsRequest,
+    ImportRequest,
+    RegionCreate,
+    RegionOut,
+    RegionUpdate,
+    VideoDetail,
+    VideoListItem,
+    VideoOut,
+)
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
@@ -71,9 +81,71 @@ def upload_video(file: UploadFile = File(...), db: Session = Depends(get_db)) ->
     return video
 
 
-@router.get("", response_model=list[VideoOut])
-def list_videos(db: Session = Depends(get_db)) -> list[Video]:
-    return list(db.scalars(select(Video).order_by(Video.created_at.desc())))
+@router.get("", response_model=list[VideoListItem])
+def list_videos(db: Session = Depends(get_db)) -> list[VideoListItem]:
+    out = []
+    for v in db.scalars(select(Video).order_by(Video.created_at.desc())):
+        item = VideoListItem.model_validate(v)
+        item.area_count = sum(r.kind == "polygon" for r in v.regions)
+        item.line_count = sum(r.kind == "line" for r in v.regions)
+        item.region_names = [r.name for r in v.regions]
+        if v.analyses:  # newest first
+            item.latest_analysis_id, item.latest_status = v.analyses[0].id, v.analyses[0].status
+        out.append(item)
+    return out
+
+
+# ------------------------------------------------------------ import folder
+def _import_root() -> Path:
+    root = get_settings().import_dir
+    if root is None or not Path(root).is_dir():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No import folder is configured (set TV_IMPORT_DIR)")
+    return Path(root).resolve()
+
+
+@router.get("/import")
+def list_import_folder(db: Session = Depends(get_db)) -> dict:
+    """Video files in the import folder, so long recordings need not be uploaded through the browser."""
+    root = get_settings().import_dir
+    if root is None or not Path(root).is_dir():
+        return {"enabled": False, "folder": str(root) if root else None, "files": []}
+    root = Path(root).resolve()
+    known = set(db.scalars(select(Video.stored_path).where(Video.imported.is_(True))))
+    files = []
+    for f in sorted(root.rglob("*")):
+        if f.is_file() and f.suffix.lower() in ALLOWED_EXTENSIONS and not any(p.startswith(".") for p in f.parts):
+            files.append({"path": f.relative_to(root).as_posix(), "size_bytes": f.stat().st_size,
+                          "imported": str(f) in known})
+    return {"enabled": True, "folder": str(root), "files": files}
+
+
+@router.post("/import", response_model=list[VideoOut], status_code=status.HTTP_201_CREATED)
+def import_videos(body: ImportRequest, db: Session = Depends(get_db)) -> list[Video]:
+    """Register files from the import folder in place (nothing is copied)."""
+    root = _import_root()
+    created = []
+    for rel in body.paths:
+        path = (root / rel).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(422, f"Not a file in the import folder: {rel!r}")
+        if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"Unsupported file type: {rel!r}")
+        existing = db.scalars(select(Video).where(Video.stored_path == str(path))).first()
+        if existing is not None:
+            created.append(existing)
+            continue
+        try:
+            info = probe(str(path))
+        except VideoReadError as exc:
+            raise HTTPException(422, f"{rel}: {exc}") from exc
+        video = Video(original_name=rel, stored_path=str(path), size_bytes=path.stat().st_size, imported=True,
+                      width=info.width, height=info.height, fps=info.fps, frame_count=info.frame_count,
+                      duration_seconds=info.duration)
+        db.add(video)
+        db.flush()
+        created.append(video)
+    db.commit()
+    return created
 
 
 @router.get("/{video_id}", response_model=VideoDetail)
@@ -86,7 +158,8 @@ def delete_video(video_id: str, db: Session = Depends(get_db)) -> None:
     video = get_video_or_404(video_id, db)
     if any(a.status in ("queued", "running") for a in video.analyses):
         raise HTTPException(status.HTTP_409_CONFLICT, "Cancel running analyses before deleting the video")
-    files = [video.stored_path] + [a.annotated_video_path for a in video.analyses if a.annotated_video_path]
+    files = [] if video.imported else [video.stored_path]  # imported files stay in the import folder
+    files += [a.annotated_video_path for a in video.analyses if a.annotated_video_path]
     dirs = [get_settings().output_dir / a.id for a in video.analyses]
     db.delete(video)
     db.commit()
@@ -159,6 +232,36 @@ def create_region(video_id: str, body: RegionCreate, db: Session = Depends(get_d
     db.add(region)
     db.commit()
     return region
+
+
+@router.post("/{video_id}/regions/copy", response_model=list[RegionOut])
+def copy_regions(video_id: str, body: CopyRegionsRequest, db: Session = Depends(get_db)) -> list[Region]:
+    """Copy another video's areas and lines (same camera position): positions are
+    stored relative to the picture, so they fit any resolution of the same view."""
+    video = get_video_or_404(video_id, db)
+    source = get_video_or_404(body.from_video_id, db)
+    if source.id == video.id:
+        raise HTTPException(422, "Choose a different video to copy from")
+    if body.replace:
+        for r in list(video.regions):
+            db.delete(r)
+        db.flush()
+        db.refresh(video)
+    taken = {r.name.strip().lower() for r in video.regions}
+    base = datetime.now(UTC)
+    for i, r in enumerate(source.regions):
+        name = r.name
+        n = 2
+        while name.strip().lower() in taken:
+            name = f"{r.name} ({n})"
+            n += 1
+        taken.add(name.strip().lower())
+        db.add(Region(video_id=video.id, name=name, kind=r.kind, points=r.points, color=r.color, role=r.role,
+                      label_forward=r.label_forward, label_backward=r.label_backward,
+                      created_at=base + timedelta(milliseconds=i)))  # keep the source's order
+    db.commit()
+    db.refresh(video)
+    return video.regions
 
 
 def _ensure_unique_name(video: Video, name: str, exclude_id: str | None = None) -> None:

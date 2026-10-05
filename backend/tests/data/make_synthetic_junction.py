@@ -23,7 +23,8 @@ ARMS = {
     "West": [(0, 130), (220, 130), (220, 230), (0, 230)],
     "East": [(420, 130), (640, 130), (640, 230), (420, 230)],
 }
-ENDS = {"North": (CX, 20), "South": (CX, H - 20), "West": (25, CY), "East": (W - 25, CY)}
+# Start/finish points lie beyond the picture, so vehicles drive into and out of view like real traffic.
+ENDS = {"North": (CX, -30), "South": (CX, H + 30), "West": (-40, CY), "East": (W + 40, CY)}
 # (type, colour BGR, size w x h, from, to)
 VEHICLES = [
     ("car", (0, 200, 0), (30, 30), "North", "South"),

@@ -80,11 +80,29 @@ class VideoOut(ORM):
     fps: float
     frame_count: int
     duration_seconds: float
+    imported: bool | None = False
     created_at: datetime
+
+
+class VideoListItem(VideoOut):
+    area_count: int = 0
+    line_count: int = 0
+    region_names: list[str] = []
+    latest_analysis_id: str | None = None
+    latest_status: AnalysisStatus | None = None
 
 
 class VideoDetail(VideoOut):
     regions: list[RegionOut]
+
+
+class ImportRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=1000, description="Paths relative to the import folder")
+
+
+class CopyRegionsRequest(BaseModel):
+    from_video_id: str
+    replace: bool = Field(True, description="Remove this video's own areas/lines first")
 
 
 # ---------------------------------------------------------------- analyses
@@ -96,6 +114,11 @@ class AnalysisSettings(BaseModel):
         "yolo", description="yolo: neural detector; motion: background subtraction (fixed cameras, no classes)")
     model_path: str | None = Field(None, description="YOLO weights; default from server settings")
     tracker: str = "bytetrack"
+    count_rule: Literal["crossing", "entering", "present"] = Field(
+        "crossing", description="crossing: comes in and leaves the drawn area; entering: comes in; "
+                                "present: seen inside it")
+    footage: Literal["normal", "timelapse"] = Field(
+        "normal", description="timelapse: vehicles jump far between frames; uses the time-lapse tracker")
     classification: Literal["size", "detector", "classifier"] = Field(
         "size", description="How car/LGV1/LGV2/truck are decided; see docs/vehicle-classification.md")
     classifier_model: str | None = Field(None, description="YOLO classification model for 'classifier' mode")
@@ -106,8 +129,17 @@ class AnalysisSettings(BaseModel):
         "bottom_center", description="Vehicle ground point: bottom_center for oblique cameras, center for overhead")
     start_seconds: float = Field(0.0, ge=0, description="Analyse from this time in the video (s)")
     end_seconds: float | None = Field(None, gt=0, description="Analyse up to this time (s); default end of video")
-    image_size: Literal[640, 960, 1280, 1920] = Field(
-        640, description="Detector input size; larger finds small/distant vehicles in HD/4K video but is slower")
+    speed: Literal["accurate", "balanced", "fast", "fastest"] = Field(
+        "accurate", description="Processing speed preset: accurate analyses every frame; balanced ~15, fast ~10, "
+                                "fastest ~6 frames per second of video (see app/pipeline/speed.py)")
+    image_size: Literal[640, 960, 1280, 1920] | None = Field(
+        640, description="Detector input size; larger finds small/distant vehicles in HD/4K video but is slower. "
+                         "None = choose from the video's width")
+    sliced_detection: bool | None = Field(
+        False, description="Also detect on 2x2 overlapping tiles (SAHI): finds small/distant vehicles, ~2.5x slower. "
+                           "None = on for HD/4K video")
+    low_light: Literal["off", "auto", "on"] = Field(
+        "off", description="CLAHE contrast boost before detection on dark frames (unlit roads)")
     count_stationary: bool = Field(
         False, description="Also count vehicles that never move (parked cars); off = moving traffic only")
     time_bin_seconds: int = Field(60, ge=1, le=86400)
@@ -146,6 +178,8 @@ class AnalysisSettings(BaseModel):
 class AnalysisOut(ORM):
     id: str
     video_id: str
+    batch_id: str | None = None
+    batch_position: int | None = None
     status: AnalysisStatus
     progress: float
     message: str | None
@@ -161,3 +195,15 @@ class AnalysisOut(ORM):
 
 class AnalysisResults(AnalysisOut):
     summary: dict[str, Any] | None
+
+
+# ----------------------------------------------------------------- batches
+class BatchCreate(BaseModel):
+    name: str | None = Field(None, max_length=200)
+    video_ids: list[str] = Field(min_length=1, max_length=2000, description="Processed in this order")
+    settings: AnalysisSettings = Field(default_factory=AnalysisSettings)
+
+    @field_validator("video_ids")
+    @classmethod
+    def _unique(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(v))

@@ -38,7 +38,16 @@ async function uploadJunction(page: Page) {
   await page.setInputFiles("input[type=file]", VIDEO);
   await page.waitForURL(/\/videos\//);
   await expect(page.locator("canvas").first()).toBeVisible();
-  await page.waitForTimeout(500); // let the overlay size to the video
+  // Wait until the overlay has sized itself to the 16:9 video and stopped resizing (slow machines).
+  let last = "";
+  await expect(async () => {
+    const box = (await page.locator("canvas").first().boundingBox())!;
+    const now = `${Math.round(box.width)}x${Math.round(box.height)}`;
+    const stable = now === last;
+    last = now;
+    expect(Math.abs(box.width / box.height - 640 / 360)).toBeLessThan(0.02);
+    expect(stable).toBe(true);
+  }).toPass({ intervals: [250], timeout: 15_000 });
 }
 
 test("counts only the two roads drawn, each under its own name and colour", async ({ page }) => {
@@ -161,6 +170,9 @@ test("polygon drawing works with fast clicks and the drawer is reachable from th
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toBeHidden();
   await expect(page.getByLabel("Region name")).toHaveCount(1);
+
+  // After drawing, the editor is back in Select / edit mode.
+  await expect(page.getByRole("button", { name: "Select / edit" })).toHaveAttribute("aria-pressed", "true");
 
   // No analysis yet -> no drawer tab on the video page.
   await expect(page.getByTitle("Show vehicle counts")).toHaveCount(0);

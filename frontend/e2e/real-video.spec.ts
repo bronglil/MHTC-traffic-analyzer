@@ -48,6 +48,9 @@ test("counts only the drawn roads on real footage with YOLO", async ({ page }) =
   await page.keyboard.press("Enter");
   await nameIt(page, "Slip road (inbound)");
 
+  // Default rule: count vehicles crossing each road. The outlines reach the horizon, where cars
+  // fade away inside them; covering most of the road still counts as crossing it.
+  await expect(page.getByRole("radio", { name: /crosses the area/ })).toBeChecked();
   await page.getByRole("button", { name: "Run analysis" }).click();
   await page.waitForURL(/\/analyses\//);
   await expect(page.getByText("Completed")).toBeVisible({ timeout: 540_000 });

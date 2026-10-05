@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from app.analysis.geometry import (
     Point,
     compass_direction,
+    line_chord,
     point_in_polygon,
     segments_intersect,
     side_of_line,
@@ -46,6 +47,17 @@ from app.pipeline.types import TrackedObject
 WHOLE_FRAME_ZONE_ID = "whole_frame"
 STATIONARY = "stationary"
 ANCHORS = ("bottom_center", "center")
+COUNT_RULES = ("crossing", "entering", "present")
+# A vehicle whose track starts or ends *inside* an area (detection range ends there,
+# the analysed part of the video starts there, or the track broke at night) still
+# crosses the area when its path covers at least this share of the area along its
+# direction of travel. Below 1/2 one vehicle split into two tracks could count twice.
+CROSSING_COVERAGE = 0.6
+START_GRACE_SECONDS = 0.25
+# Trackers confirm a new track one to three analysed frames after a vehicle appears
+# (more video time when frames are skipped). A track whose box, moved back along its
+# motion this many samples, reaches the picture edge drove in through that edge.
+CONFIRM_SAMPLES = 3
 # Area roles for movement (origin -> destination) counting.
 ROLES = ("count", "in", "out", "both")
 
@@ -127,6 +139,8 @@ class _ZoneVisit:
     left: bool = False  # ...and seen outside again afterwards
     outside_before: Point | None = None  # last position outside, just before entering
     traversal: float = 0.0  # distance from outside_before to the furthest exit position
+    after_point: Point | None = None  # first position outside after the latest stretch inside
+    after_frame: int = -1
 
 
 @dataclass
@@ -137,7 +151,9 @@ class _TrackState:
     hits: int = 0
     last_seen_frame: int = 0
     first_point: Point | None = None
+    first_box: tuple[float, float, float, float] | None = None
     max_travel: float = 0.0  # furthest distance from the first position (pixels)
+    at_border: bool = False  # last box touched the picture edge (vehicle driving out of view)
     last_point: Point | None = None
     # Recent (frame, point) samples, used to predict where a lost vehicle went.
     recent: deque[tuple[int, Point]] = field(default_factory=lambda: deque(maxlen=8))
@@ -172,6 +188,7 @@ class TrafficAnalyzer:
         anchor: str = "bottom_center",
         count_stationary: bool = False,
         relink_gap_frames: int = 30,
+        count_rule: str = "present",
     ) -> None:
         """
         :param frame_size: (width, height) in pixels.
@@ -183,10 +200,19 @@ class TrafficAnalyzer:
             by a sign, lamp post or another vehicle) and re-appears as a new track id
             within this many source frames, near where it was heading, is treated as
             the same vehicle. 0 disables re-linking.
+        :param count_rule: when a vehicle counts for a drawn area (see COUNT_RULES):
+            ``crossing`` - it comes in from outside and leaves again;
+            ``entering`` - it comes in from outside (it may stay);
+            ``present`` - it is seen inside (passing through, or for min_frames).
+            The picture's edge counts as "outside" for areas touching it. The
+            whole-frame zone always uses ``present``.
         :param anchor: point of the box used as the vehicle's ground position:
             ``bottom_center`` for oblique/side cameras (where the wheels touch the
             road) or ``center`` for overhead cameras.
         """
+        if count_rule not in COUNT_RULES:
+            raise ValueError(f"count_rule must be one of {COUNT_RULES}")
+        self.count_rule = count_rule
         if anchor not in ANCHORS:
             raise ValueError(f"anchor must be one of {ANCHORS}")
         self.anchor = anchor
@@ -202,6 +228,7 @@ class TrafficAnalyzer:
         self.track_timeout_frames = track_timeout_frames
         self.relink_gap_frames = relink_gap_frames
         self._size = (width, height)
+        self._start_time: float | None = None  # time of the first analysed frame
         self._tracks: dict[int, _TrackState] = {}
         self._alias: dict[int, int] = {}  # tracker id -> id of the vehicle it continues
         self.zone_counts: list[ZoneCount] = []
@@ -221,6 +248,12 @@ class TrafficAnalyzer:
     # ------------------------------------------------------------------ update
     def update(self, frame_index: int, timestamp: float, objects: Iterable[TrackedObject]) -> None:
         objects = list(objects)
+        if self._start_time is None:
+            self._start_time = timestamp
+        # Vehicles already in an area when the analysed period begins (trackers confirm a
+        # track a few frames late) count as having come in: like a survey count, a vehicle
+        # counts in the period in which it completes its crossing.
+        at_start = timestamp - self._start_time <= START_GRACE_SECONDS
         seen: set[int] = {self._alias.get(o.track_id, o.track_id) for o in objects}
         for obj in objects:
             tid = self._alias.get(obj.track_id, obj.track_id)
@@ -240,25 +273,33 @@ class TrafficAnalyzer:
             st.recent.append((frame_index, pt))
             if st.first_point is None:
                 st.first_point = pt
+                st.first_box = (obj.x1, obj.y1, obj.x2, obj.y2)
             else:
                 d = ((pt[0] - st.first_point[0]) ** 2 + (pt[1] - st.first_point[1]) ** 2) ** 0.5
                 st.max_travel = max(st.max_travel, d)
 
             prev = st.last_point
+            if st.hits == CONFIRM_SAMPLES + 1 and st.first_point is not None:
+                self._came_into_view(st, pt)
+            edge = self._touches_border(obj)
+            st.at_border = edge
             for zone in self.zones:
                 inside = zone.polygon is None or point_in_polygon(pt, zone.polygon)
                 visit = st.visits.get(zone.id)
                 if inside:
                     if visit is None:
                         visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, pt)
-                        visit.entered_from_outside = prev is not None
-                        visit.outside_before = prev
+                        # From outside the area - or into view through the picture edge.
+                        visit.entered_from_outside = prev is not None or edge or at_start
+                        visit.outside_before = prev if prev is not None else pt
                     visit.frames += 1
                     visit.last_frame = frame_index
                     visit.last_time = timestamp
                     visit.exit_point = pt
                 elif visit is not None:
                     visit.left = True
+                    if visit.last_frame > visit.after_frame:
+                        visit.after_point, visit.after_frame = pt, frame_index
                     if visit.outside_before is not None:
                         d = ((pt[0] - visit.outside_before[0]) ** 2 + (pt[1] - visit.outside_before[1]) ** 2) ** 0.5
                         visit.traversal = max(visit.traversal, d)
@@ -283,6 +324,37 @@ class TrafficAnalyzer:
             st.last_point = pt
 
         self._expire(frame_index)
+
+    def _came_into_view(self, st: _TrackState, now: Point) -> None:
+        """A few samples into a track: if its first box, moved back along the track's
+        average motion by CONFIRM_SAMPLES samples, reaches the picture edge, the areas it
+        was already inside when first seen were entered from outside (through the picture
+        edge), not appeared in. Averaging over several samples matters because tracker
+        output is Kalman-smoothed and starts at zero velocity."""
+        w, h = self._size
+        if st.first_box is None or st.first_point is None:
+            return
+        first = st.first_point
+        x1, y1, x2, y2 = st.first_box
+        n = st.hits - 1
+        bx, by = (first[0] - now[0]) / n, (first[1] - now[1]) / n  # backwards motion per sample
+        steps = []  # samples back until the box reaches the picture edge
+        if bx > 0:
+            steps.append((w - x2) / bx)
+        elif bx < 0:
+            steps.append(x1 / -bx)
+        if by > 0:
+            steps.append((h - y2) / by)
+        elif by < 0:
+            steps.append(y1 / -by)
+        if not steps or min(steps) > CONFIRM_SAMPLES:
+            return
+        k = min(steps)
+        start = (min(max(first[0] + k * bx, 0.0), w), min(max(first[1] + k * by, 0.0), h))
+        for visit in st.visits.values():
+            if not visit.entered_from_outside and visit.entry_point == first:
+                visit.entered_from_outside = True
+                visit.outside_before = start
 
     def _anchor(self, obj: TrackedObject) -> Point:
         return obj.bottom_center if self.anchor == "bottom_center" else obj.center
@@ -334,13 +406,59 @@ class TrafficAnalyzer:
             return STATIONARY
         return compass_direction(start, end)
 
+    def _touches_border(self, obj: TrackedObject) -> bool:
+        """Box at (or within half its own size of) the picture edge: the vehicle is
+        coming into or going out of view. The size-relative margin covers trackers
+        that confirm a track a frame or two after it first appears at the edge."""
+        w, h = self._size
+        mx = max(0.01 * w, 0.5 * (obj.x2 - obj.x1))
+        my = max(0.01 * h, 0.5 * (obj.y2 - obj.y1))
+        return obj.x1 <= mx or obj.y1 <= my or obj.x2 >= w - mx or obj.y2 >= h - my
+
+    def _close_edge_exits(self, st: _TrackState) -> None:
+        """A track that ended while touching the picture edge drove out of view: for
+        areas it was still inside, that counts as leaving them."""
+        if not st.at_border or st.last_point is None:
+            return
+        for visit in st.visits.values():
+            if visit.last_frame == st.last_seen_frame and not visit.left:
+                visit.left = True
+                start = visit.outside_before or visit.entry_point
+                d = ((st.last_point[0] - start[0]) ** 2 + (st.last_point[1] - start[1]) ** 2) ** 0.5
+                visit.traversal = max(visit.traversal, d)
+
     def _qualifies(self, visit: _ZoneVisit, zone_id: str) -> bool:
-        """Counted if the vehicle passed through the area (entered from outside and
-        left again having really travelled across it, however briefly it was inside)
-        or stayed long enough. The travel requirement stops objects parked or queued
-        on the area's edge from "passing through" on every jitter of their box."""
+        """Whether a visit counts, per ``count_rule``. A vehicle "passes through" when
+        it entered from outside and left again having really travelled across the
+        area, however briefly it was inside; the travel requirement stops objects
+        parked or queued on the area's edge from passing on every jitter of their box."""
         passed = visit.entered_from_outside and visit.left and visit.traversal >= self._pass_dist[zone_id]
+        rule = "present" if self._zone_by_id[zone_id].polygon is None else self.count_rule
+        if rule == "crossing":
+            return passed or self._covers(visit, zone_id)
+        if rule == "entering":
+            return visit.entered_from_outside and (visit.left or visit.frames >= 2)
         return passed or visit.frames >= self.min_frames_in_zone
+
+    def _covers(self, visit: _ZoneVisit, zone_id: str) -> bool:
+        """The path through the area covers most of the area along the direction of
+        travel, even though the track was not seen on both sides of it. Ends seen
+        outside (or at the picture edge) count as reaching the area's outline."""
+        polygon = self._zone_by_id[zone_id].polygon
+        start = visit.outside_before if visit.entered_from_outside and visit.outside_before else visit.entry_point
+        end = visit.after_point if visit.left and visit.after_point else visit.exit_point
+        dist = ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
+        if dist < self._pass_dist[zone_id]:
+            return False
+        chord = line_chord(polygon, start, ((end[0] - start[0]) / dist, (end[1] - start[1]) / dist))
+        if chord is None:
+            return False
+        t0, t1 = chord  # outline crossings, as distances along the path from `start`
+        span = t1 - t0
+        if span <= 0:
+            return False
+        missing = (0.0 if visit.entered_from_outside else max(0.0, -t0)) + (0.0 if visit.left else max(0.0, t1 - dist))
+        return missing <= (1 - CROSSING_COVERAGE) * span
 
     def _moved(self, st: _TrackState) -> bool:
         return self.count_stationary or st.max_travel >= self.min_disp
@@ -352,6 +470,7 @@ class TrafficAnalyzer:
         if not self._accepts(vtype) or not self._moved(st):
             return
         zone_by_id = {z.id: z for z in self.zones}
+        self._close_edge_exits(st)
         for zone_id, visit in st.visits.items():
             if not self._qualifies(visit, zone_id):
                 continue

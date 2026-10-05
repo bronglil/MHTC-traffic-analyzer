@@ -30,6 +30,8 @@ class YoloDetector:
         iou: float = 0.5,
         image_size: int = 640,
         device: str | None = None,
+        tiles: int = 1,
+        tile_overlap: float = 0.2,
     ) -> None:
         from ultralytics import YOLO  # heavy import, deferred
 
@@ -38,31 +40,73 @@ class YoloDetector:
         self.iou = iou
         self.image_size = image_size
         self.device = device or None
+        # Sliced inference (SAHI, Akyon et al. 2022): also detect on an n x n grid of
+        # overlapping tiles so small / distant vehicles are larger in the model input.
+        self.tiles = max(1, int(tiles))
+        self.tile_overlap = tile_overlap
         names = self.model.names  # {id: name}
         self._class_map = {i: vt for i, n in names.items() if (vt := to_vehicle_type(n)) is not None}
         if not self._class_map:
             raise ValueError(f"Model {model_path!r} has no recognised vehicle classes: {list(names.values())}")
 
-    def detect(self, image: np.ndarray) -> list[Detection]:
-        result = self.model.predict(
-            image,
+    def _predict(self, images: list[np.ndarray]) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        results = self.model.predict(
+            images,
             conf=self.confidence,
             iou=self.iou,
             imgsz=self.image_size,
             classes=list(self._class_map),
             device=self.device,
             verbose=False,
-        )[0]
-        boxes = result.boxes if result.boxes is not None else result.obb
-        if boxes is None or len(boxes) == 0:
+        )
+        out = []
+        for result in results:
+            boxes = result.boxes if result.boxes is not None else result.obb
+            if boxes is None or len(boxes) == 0:
+                out.append((np.zeros((0, 4)), np.zeros(0), np.zeros(0, dtype=int)))
+                continue
+            out.append((boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy(), boxes.cls.cpu().numpy().astype(int)))
+        return out
+
+    def _tiles(self, h: int, w: int) -> list[tuple[int, int, int, int]]:
+        n = self.tiles
+        tw, th = int(w / (n - (n - 1) * self.tile_overlap)), int(h / (n - (n - 1) * self.tile_overlap))
+        xs = np.linspace(0, w - tw, n).astype(int)
+        ys = np.linspace(0, h - th, n).astype(int)
+        return [(x, y, x + tw, y + th) for y in ys for x in xs]
+
+    def detect(self, image: np.ndarray) -> list[Detection]:
+        h, w = image.shape[:2]
+        regions = [(0, 0, w, h)] + (self._tiles(h, w) if self.tiles > 1 else [])
+        crops = [image] + [image[y1:y2, x1:x2] for x1, y1, x2, y2 in regions[1:]]
+        boxes, confs, classes = [], [], []
+        for (ox, oy, rx2, ry2), (xyxy, conf, cls) in zip(regions, self._predict(crops), strict=True):
+            for b, c, k in zip(xyxy, conf, cls, strict=True):
+                if k not in self._class_map:
+                    continue
+                bx1, by1, bx2, by2 = b[0] + ox, b[1] + oy, b[2] + ox, b[3] + oy
+                if (ox, oy) != (0, 0) or (rx2, ry2) != (w, h):
+                    # Drop tile detections cut by an inner tile edge (the full frame or a
+                    # neighbouring tile sees that vehicle whole).
+                    m = 2
+                    if (bx1 <= ox + m and ox > 0) or (by1 <= oy + m and oy > 0) \
+                            or (bx2 >= rx2 - m and rx2 < w) or (by2 >= ry2 - m and ry2 < h):
+                        continue
+                boxes.append([bx1, by1, bx2, by2])
+                confs.append(float(c))
+                classes.append(int(k))
+        if not boxes:
             return []
-        xyxy = boxes.xyxy.cpu().numpy()
-        conf = boxes.conf.cpu().numpy()
-        cls = boxes.cls.cpu().numpy().astype(int)
+        keep = list(range(len(boxes)))
+        if len(regions) > 1:
+            import cv2
+
+            xywh = [[b[0], b[1], b[2] - b[0], b[3] - b[1]] for b in boxes]
+            keep = [int(i) for i in np.array(cv2.dnn.NMSBoxes(xywh, confs, 0.0, 0.5)).reshape(-1)]
         return [
-            Detection(float(b[0]), float(b[1]), float(b[2]), float(b[3]), float(c), self._class_map[k])
-            for b, c, k in zip(xyxy, conf, cls, strict=True)
-            if k in self._class_map
+            Detection(float(boxes[i][0]), float(boxes[i][1]), float(boxes[i][2]), float(boxes[i][3]), confs[i],
+                      self._class_map[classes[i]])
+            for i in keep
         ]
 
 

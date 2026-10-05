@@ -34,6 +34,7 @@ from app.models import Analysis, LineCrossingRecord, MovementRecord, Video, Zone
 from app.pipeline.classifier import ClassRefiner, create_refiner
 from app.pipeline.detector import Detector, MotionDetector, YoloDetector
 from app.pipeline.engine import AnalysisCancelled, PipelineConfig, RegionDef, run_pipeline
+from app.pipeline.speed import plan as speed_plan
 from app.pipeline.tracker import create_tracker
 from app.reporting.aggregate import summarize
 from app.schemas import MODEL_NAME_RE
@@ -59,14 +60,30 @@ def resolve_model(name: str) -> str:
     return str(local) if local.exists() else name
 
 
+def auto_image_size(width: int) -> int:
+    """Detector input for a video width: small/distant vehicles vanish when 4K is shrunk to 640 px."""
+    return 1280 if width >= 3000 else 960 if width >= 1800 else 640
+
+
+def auto_sliced(width: int) -> bool:
+    return width >= 1800  # HD/4K: distant vehicles are small
+
+
+def format_eta(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s" if m else f"{s}s"
+
+
 def default_detector_factory(kind: str, model_path: str, confidence: float, device: str | None,
-                             image_size: int = 640) -> Detector:
+                             image_size: int = 640, tiles: int = 1) -> Detector:
     if kind == "motion":
         return MotionDetector()  # stateful background model: never shared between jobs
-    key = (model_path, confidence, device, image_size)
+    key = (model_path, confidence, device, image_size, tiles)
     if key not in _detector_cache:
         _detector_cache[key] = YoloDetector(resolve_model(model_path), confidence=confidence, device=device,
-                                            image_size=image_size)
+                                            image_size=image_size, tiles=tiles)
     return _detector_cache[key]
 
 
@@ -165,6 +182,7 @@ def process(analysis_id: str) -> None:
         video_path = video.stored_path
         fps = video.fps
         height = video.height
+        width = video.width
 
     annotated_path: Path | None = None
     if cfg.get("generate_annotated_video"):
@@ -178,12 +196,30 @@ def process(analysis_id: str) -> None:
         min_seconds_in_zone=cfg.get("min_seconds_in_zone", 0.3),
         anchor=cfg.get("anchor", "bottom_center"),
         count_stationary=cfg.get("count_stationary", False),
+        # Analyses created before count rules existed keep their original behaviour.
+        count_rule=cfg.get("count_rule", "present"),
+        low_light=cfg.get("low_light", "off"),
         start_seconds=cfg.get("start_seconds", 0.0),
         end_seconds=cfg.get("end_seconds"),
         annotated_video_path=str(annotated_path) if annotated_path else None,
         annotated_video_layout=cfg.get("annotated_video_layout", "overlay"),
     )
     tracker_kind = cfg.get("tracker", settings.default_tracker)
+    timelapse = cfg.get("footage") == "timelapse"
+    if timelapse:
+        # Vehicles are visible for only a few frames and jump far between them.
+        tracker_kind = "timelapse"
+        pipeline_cfg.min_frames_in_zone = 2
+    image_size = cfg.get("image_size") or auto_image_size(width)
+    sliced = cfg.get("sliced_detection")
+    sliced = auto_sliced(width) if sliced is None else bool(sliced)
+    speed = speed_plan(cfg.get("speed") or "accurate", fps, pipeline_cfg.frame_stride, image_size, sliced,
+                       tracker_kind, timelapse)
+    pipeline_cfg.frame_stride = speed.frame_stride
+    tracker_kind = speed.tracker
+    processing = {"speed": cfg.get("speed") or "accurate", "frame_stride": speed.frame_stride,
+                  "analysed_fps": round(speed.analysed_fps, 2), "image_size": speed.image_size,
+                  "sliced_detection": speed.sliced, "tracker": tracker_kind}
     confidence = float(cfg.get("confidence", 0.3))
     # ByteTrack/BoT-SORT associate low-confidence boxes in a second stage, so
     # the detector threshold is kept low and `confidence` is applied by the tracker.
@@ -206,21 +242,32 @@ def process(analysis_id: str) -> None:
                 )
         return last_cancel_check[1]
 
+    started = time.monotonic()
+    first_frame = round(float(cfg.get("start_seconds") or 0.0) * fps)
+
     def on_progress(pct: float, frame_index: int, breakdown: dict[str, dict]) -> None:
+        elapsed = time.monotonic() - started
+        video_seconds = max(0, frame_index - first_frame) / fps if fps else 0.0
+        message = f"Processing frame {frame_index}"
+        if elapsed > 2 and video_seconds > 0:
+            rate = video_seconds / elapsed  # seconds of video per second of processing
+            message += f" · {rate:.1f}× real time"
+            if 0.01 < pct < 1:
+                message += f" · about {format_eta(elapsed * (1 - pct) / pct)} left"
         with SessionLocal() as db:
             db.execute(
                 update(Analysis)
                 .where(Analysis.id == analysis_id)
                 .values(progress=round(pct, 4), live_counts={k: v["total"] for k, v in breakdown.items()},
                         live_breakdown=breakdown, frames_processed=frame_index,
-                        message=f"Processing frame {frame_index}")
+                        message=message)
             )
             db.commit()
 
     try:
         detector = detector_factory(detector_kind, cfg.get("model_path") or settings.model_path, det_conf,
-                                    settings.device, cfg.get("image_size", 640))
-        tracker = create_tracker(tracker_kind, fps / max(1, pipeline_cfg.frame_stride), confidence)
+                                    settings.device, speed.image_size, 2 if speed.sliced else 1)
+        tracker = create_tracker(tracker_kind, fps / max(1, pipeline_cfg.frame_stride), confidence, speed.buffer)
         refiner = refiner_factory(classification, height, cfg.get("classifier_model") or settings.classifier_model,
                                   settings.device)
         result = run_pipeline(
@@ -235,6 +282,7 @@ def process(analysis_id: str) -> None:
         summary["frames_processed"] = result.frames_processed
         summary["video_duration_seconds"] = result.duration_seconds
         summary["processing_seconds"] = round(result.elapsed_seconds, 2)
+        summary["processing"] = processing
         with SessionLocal() as db:
             job = db.get(Analysis, analysis_id)
             db.add_all(ZoneCountRecord(analysis_id=analysis_id, **c) for c in result.zone_counts)

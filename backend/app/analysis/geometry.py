@@ -66,3 +66,24 @@ def compass_direction(start: Point, end: Point) -> str:
     dy = start[1] - end[1]  # image y grows downwards
     angle = math.degrees(math.atan2(dy, dx)) % 360.0
     return COMPASS_8[int(((angle + 22.5) % 360.0) // 45.0)]
+
+
+def line_chord(polygon: Sequence[Point], origin: Point, direction: Point) -> tuple[float, float] | None:
+    """Where the infinite line ``origin + t * direction`` crosses the polygon's
+    outline: the smallest and largest ``t``, or None if it misses the polygon.
+    With a unit ``direction`` the values are distances from ``origin``."""
+    ts: list[float] = []
+    n = len(polygon)
+    ux, uy = direction
+    for i in range(n):
+        ax, ay = polygon[i]
+        bx, by = polygon[(i + 1) % n]
+        dx, dy = bx - ax, by - ay
+        den = ux * dy - uy * dx
+        if abs(den) < 1e-12:
+            continue  # edge parallel to the line
+        wx, wy = ax - origin[0], ay - origin[1]
+        s = (wx * uy - wy * ux) / den
+        if -1e-9 <= s <= 1 + 1e-9:
+            ts.append((wx * dy - wy * dx) / den)
+    return (min(ts), max(ts)) if len(ts) >= 2 else None

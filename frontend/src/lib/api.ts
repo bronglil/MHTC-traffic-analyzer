@@ -23,7 +23,57 @@ export interface Video {
   fps: number;
   frame_count: number;
   duration_seconds: number;
+  imported?: boolean | null;
   created_at: string;
+}
+
+/** Video as listed on the videos page, with what has been drawn and the latest run. */
+export interface VideoListItem extends Video {
+  area_count: number;
+  line_count: number;
+  region_names: string[];
+  latest_analysis_id: string | null;
+  latest_status: AnalysisStatus | null;
+}
+
+export interface ImportListing {
+  enabled: boolean;
+  folder: string | null;
+  files: { path: string; size_bytes: number; imported: boolean }[];
+}
+
+export type Speed = "accurate" | "balanced" | "fast" | "fastest";
+
+export interface BatchItem {
+  analysis_id: string;
+  position: number;
+  video_id: string;
+  video_name: string;
+  duration_seconds: number;
+  status: AnalysisStatus;
+  progress: number;
+  message: string | null;
+  areas: string[];
+  lines: string[];
+  whole_frame: boolean;
+  counts: Record<string, number>;
+  by_type: Record<string, number>;
+  processing_seconds: number | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface Batch {
+  id: string;
+  name: string;
+  created_at: string;
+  settings: AnalysisSettings;
+  videos: number;
+  status: "queued" | "running" | "completed" | "finished";
+  status_counts: Record<AnalysisStatus, number>;
+  progress: number;
+  total_video_seconds: number;
+  items?: BatchItem[];
 }
 
 export interface VideoDetail extends Video {
@@ -49,9 +99,14 @@ export interface AnalysisSettings {
   generate_annotated_video: boolean;
   annotated_video_layout: "overlay" | "pipeline";
   count_stationary?: boolean;
+  count_rule?: "crossing" | "entering" | "present";
+  sliced_detection?: boolean | null; // null = on for HD / 4K video
+  low_light?: "off" | "auto" | "on";
+  footage?: "normal" | "timelapse";
   start_seconds?: number;
   end_seconds?: number | null;
-  image_size?: 640 | 960 | 1280 | 1920;
+  image_size?: 640 | 960 | 1280 | 1920 | null; // null = from the video's width
+  speed?: Speed;
 }
 
 export interface StageSnapshot {
@@ -67,7 +122,7 @@ export interface Breakdown {
   total: number;
   by_type: Record<string, number>;
   by_direction: Record<string, number>;
-  by_direction_type?: Record<string, Record<string, number>>; // lines only
+  by_direction_type?: Record<string, Record<string, number>>; // areas (newer analyses) and lines
 }
 
 export interface TimeRow {
@@ -89,6 +144,9 @@ export interface Summary {
   frames_processed: number;
   video_duration_seconds: number;
   processing_seconds: number;
+  processing?: { speed: Speed; frame_stride: number; analysed_fps: number; image_size: number;
+    sliced_detection: boolean; tracker: string };
+  movements?: { from: string; to: string; total: number; by_type: Record<string, number> }[];
 }
 
 export interface LiveEntry {
@@ -100,6 +158,8 @@ export interface LiveEntry {
 export interface Analysis {
   id: string;
   video_id: string;
+  batch_id?: string | null;
+  batch_position?: number | null;
   status: AnalysisStatus;
   progress: number;
   message: string | null;
@@ -118,6 +178,8 @@ export interface Meta {
   vehicle_types: string[];
   trackers: string[];
   default_model: string;
+  speeds?: Speed[];
+  import_folder?: boolean;
 }
 
 export class ApiError extends Error {
@@ -149,7 +211,11 @@ const json = (method: string, body: unknown): RequestInit => ({
 
 export const api = {
   meta: () => request<Meta>("/api/meta"),
-  listVideos: () => request<Video[]>("/api/videos"),
+  listVideos: () => request<VideoListItem[]>("/api/videos"),
+  importListing: () => request<ImportListing>("/api/videos/import"),
+  importVideos: (paths: string[]) => request<Video[]>("/api/videos/import", json("POST", { paths })),
+  copyRegions: (videoId: string, fromVideoId: string, replace = true) =>
+    request<Region[]>(`/api/videos/${videoId}/regions/copy`, json("POST", { from_video_id: fromVideoId, replace })),
   getVideo: (id: string) => request<VideoDetail>(`/api/videos/${id}`),
   deleteVideo: (id: string) => request<void>(`/api/videos/${id}`, { method: "DELETE" }),
   videoUrl: (id: string) => `/api/videos/${id}/file`,
@@ -196,6 +262,15 @@ export const api = {
   exportUrl: (id: string, format: "csv" | "csv_bundle" | "xlsx" | "json") => `/api/analyses/${id}/export?format=${format}`,
   annotatedVideoUrl: (id: string, download = false) =>
     `/api/analyses/${id}/annotated-video${download ? "?download=true" : ""}`,
+
+  createBatch: (videoIds: string[], settings: AnalysisSettings, name?: string) =>
+    request<Batch>("/api/batches", json("POST", { video_ids: videoIds, settings, name: name || null })),
+  listBatches: () => request<Batch[]>("/api/batches"),
+  getBatch: (id: string) => request<Batch>(`/api/batches/${id}`),
+  cancelBatch: (id: string) => request<Batch>(`/api/batches/${id}/cancel`, { method: "POST" }),
+  retryBatch: (id: string) => request<Batch>(`/api/batches/${id}/retry`, { method: "POST" }),
+  deleteBatch: (id: string) => request<void>(`/api/batches/${id}`, { method: "DELETE" }),
+  batchExportUrl: (id: string, format: "xlsx" | "csv" | "zip") => `/api/batches/${id}/export?format=${format}`,
 
   progressSocket(id: string): WebSocket {
     const proto = location.protocol === "https:" ? "wss" : "ws";

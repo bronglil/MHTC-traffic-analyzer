@@ -39,8 +39,10 @@ def summarize(
     for c in zone_counts:
         a = areas.setdefault(
             c["zone_id"],
-            {"id": c["zone_id"], "name": c["zone_name"], "total": 0, "by_type": Counter(), "by_direction": Counter()},
+            {"id": c["zone_id"], "name": c["zone_name"], "total": 0, "by_type": Counter(), "by_direction": Counter(),
+             "by_direction_type": defaultdict(Counter)},
         )
+        a["by_direction_type"][c["direction"]][c["vehicle_type"]] += 1
         a["total"] += 1
         a["by_type"][c["vehicle_type"]] += 1
         a["by_direction"][c["direction"]] += 1

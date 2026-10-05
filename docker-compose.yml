@@ -21,9 +21,11 @@ services:
       TV_DATA_DIR: /data
       TV_EMBEDDED_WORKER: "false"
       TV_CORS_ORIGINS: '["http://localhost:8080"]'
+      # Videos copied into ./videos (next to this file) can be imported without uploading.
+      TV_IMPORT_DIR: /videos
       # TV_MODEL_PATH: mhtc-vehicles.pt        # custom detector in /data/models (default: yolo11n.pt baked in)
       # TV_CLASSIFIER_MODEL: mhtc-vehicle-cls.pt
-    volumes: [data:/data]
+    volumes: [data:/data, ./videos:/videos:ro]
     depends_on:
       db: {condition: service_healthy}
 
@@ -32,12 +34,13 @@ services:
     image: traffic-vision-backend:latest
     command: ["python", "-m", "app.workers.worker"]
     environment: *backend-env
-    volumes: [data:/data]
+    volumes: [data:/data, ./videos:/videos:ro]
     depends_on:
       db: {condition: service_healthy}
-    # Scale out with: docker compose up --scale worker=3
-    # GPU: add `deploy.resources.reservations.devices: [{capabilities: [gpu]}]`
-    # and build from a CUDA-enabled image.
+    # Batches run one video at a time per worker. Several videos at once:
+    #   docker compose up -d --scale worker=2
+    # (each worker uses all CPU cores, so more than 2 rarely helps without a GPU).
+    # NVIDIA GPU: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 
   web:
     build: ./frontend

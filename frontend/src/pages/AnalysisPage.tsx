@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SimpleBars, StackedBars, TimeColumns, presentTypes } from "../components/Charts";
 import CountsDrawer from "../components/CountsDrawer";
 import PipelineStages from "../components/PipelineStages";
+import { SPEED_LABELS } from "../components/SettingsForm";
 import StatusBadge from "../components/StatusBadge";
 import { countEntries } from "../lib/counts";
 import { api, formatDuration, type Analysis, type Summary, type TimeRow } from "../lib/api";
@@ -54,13 +55,21 @@ export default function AnalysisPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <Link to={`/videos/${analysis.video_id}`} className="text-sm text-ink-3 hover:underline">← Back to video</Link>
+          <div className="flex flex-wrap gap-3 text-sm text-ink-3">
+            <Link to={`/videos/${analysis.video_id}`} className="hover:underline">← Back to video</Link>
+            {analysis.batch_id && (
+              <Link to={`/batches/${analysis.batch_id}`} className="hover:underline">
+                ← Batch (video {analysis.batch_position})
+              </Link>
+            )}
+          </div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
             Analysis results <StatusBadge status={analysis.status} progress={analysis.progress} />
           </h1>
           <p className="text-xs text-ink-3">
             {analysis.config.vehicle_types.map((t) => VEHICLE_LABELS[t] ?? t).join(", ")} · {analysis.config.detector ?? "yolo"}{" "}
             detector · {analysis.config.tracker} tracker
+            {analysis.config.count_rule ? ` · counting vehicles that ${{ crossing: "cross", entering: "enter", present: "are seen in" }[analysis.config.count_rule]} each area` : ""}
             {(analysis.config.start_seconds || analysis.config.end_seconds) ? ` · ${formatDuration(analysis.config.start_seconds ?? 0)}–${analysis.config.end_seconds ? formatDuration(analysis.config.end_seconds) : "end"}` : ""} · {analysis.config.classification ?? "size"} classification · started{" "}
             {new Date(analysis.created_at).toLocaleString()}
           </p>
@@ -173,122 +182,231 @@ function Tile({ label, value, sub }: { label: string; value: number | string; su
   );
 }
 
+type TabKey = "overview" | "types" | "directions" | "time" | "vehicles" | "lines" | "movements" | "video";
+
+/** Results in tabs, with area and vehicle-type filters that apply to every tab. */
 function Dashboard({ analysis, summary }: { analysis: Analysis; summary: Summary }) {
-  const areaNames = summary.areas.map((a) => a.name);
+  const [tab, setTab] = useState<TabKey>("overview");
+  const [areaFilter, setAreaFilter] = useState<string>(""); // "" = all; else "area:<name>" / "line:<name>"
+  const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
+
+  const noResults = summary.areas.length === 0 && summary.lines.length === 0;
+  const allTypes = presentTypes([...summary.areas, ...summary.lines]);
+  const keepType = (t: string) => typeFilter.size === 0 || typeFilter.has(t);
+  const pick = (byType: Record<string, number>) =>
+    Object.fromEntries(Object.entries(byType).filter(([t]) => keepType(t)));
+  const sum = (byType: Record<string, number>) => Object.values(byType).reduce((a, b) => a + b, 0);
+  const filtered = <T extends { name: string; by_type: Record<string, number> }>(rows: T[], source: "area" | "line") =>
+    rows
+      .filter((r) => !areaFilter || areaFilter === `${source}:${r.name}`)
+      .map((r) => ({ ...r, by_type: pick(r.by_type), total: sum(pick(r.by_type)) }));
+  const areas = filtered(summary.areas, "area");
+  const lines = filtered(summary.lines, "line");
+  const movements = summary.movements ?? [];
+
+  const tabs: { key: TabKey; label: string; show: boolean }[] = [
+    { key: "overview", label: "Overview", show: true },
+    { key: "types", label: "By vehicle type", show: !noResults },
+    { key: "directions", label: "Directions", show: summary.areas.length > 0 },
+    { key: "time", label: "Over time", show: !noResults },
+    { key: "vehicles", label: "Counted vehicles", show: !noResults },
+    { key: "lines", label: "Counting lines", show: summary.lines.length > 0 },
+    { key: "movements", label: "Movements", show: movements.length > 0 },
+    { key: "video", label: "Annotated video", show: analysis.has_annotated_video },
+  ];
   const sources = [
     ...summary.areas.map((a) => ({ key: `area:${a.name}`, label: a.name })),
     ...summary.lines.map((l) => ({ key: `line:${l.name}`, label: `${l.name} (line)` })),
   ];
-  const [dirArea, setDirArea] = useState(areaNames[0] ?? "");
-  const [timeSource, setTimeSource] = useState(sources[0]?.key ?? "");
-
-  const noResults = summary.areas.length === 0 && summary.lines.length === 0;
-
-  const timeRows = useMemo(() => fillTimeRows(summary, timeSource), [summary, timeSource]);
-  const dirItems = useMemo(() => {
-    const area = summary.areas.find((a) => a.name === dirArea);
-    if (!area) return [];
-    return DIRECTION_ORDER.filter((d) => area.by_direction[d]).map((d) => ({ label: directionLabel(d), value: area.by_direction[d] }));
-  }, [summary, dirArea]);
-
-  const types = presentTypes([...summary.areas, ...summary.lines]);
+  const p = summary.processing;
 
   return (
-    <div className="space-y-5">
-      <CountTiles analysis={analysis} />
-      <div className="flex flex-wrap gap-3">
-        <Tile label="Video processed" value={formatDuration(summary.video_duration_seconds)}
-          sub={`${summary.frames_processed} frames in ${formatDuration(summary.processing_seconds)}`} />
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-1 border-b border-line" role="tablist" aria-label="Results">
+        {tabs.filter((t) => t.show).map((t) => (
+          <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm ${tab === t.key ? "border-accent font-medium text-ink" : "border-transparent text-ink-2 hover:text-ink"}`}>
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {noResults && (
-        <div className="card p-4 text-sm text-ink-2">
-          No vehicles of the selected types were counted. Try lowering the detection confidence, reducing “min frames in
-          area”, or checking that the areas cover the road.
+      {!noResults && tab !== "video" && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label="Filters">
+          <label className="flex items-center gap-2">
+            <span className="text-ink-3">Area / line</span>
+            <select className="input w-auto py-1" value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}
+              aria-label="Filter by area or line">
+              <option value="">All</option>
+              {sources.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+            </select>
+          </label>
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filter by vehicle type">
+            <span className="mr-1 text-ink-3">Vehicle types</span>
+            {allTypes.map((t) => {
+              const on = typeFilter.has(t);
+              return (
+                <button key={t} aria-pressed={on}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${on ? "border-accent bg-surface" : "border-line text-ink-2"}`}
+                  onClick={() => setTypeFilter((s) => {
+                    const n = new Set(s);
+                    if (on) n.delete(t);
+                    else n.add(t);
+                    return n;
+                  })}>
+                  <span className="h-2 w-2 rounded-sm" style={{ background: vehicleColor(t) }} />
+                  {VEHICLE_LABELS[t] ?? t}
+                </button>
+              );
+            })}
+            {typeFilter.size > 0 && <button className="text-xs underline" onClick={() => setTypeFilter(new Set())}>all types</button>}
+          </div>
         </div>
       )}
 
-      {analysis.has_annotated_video && (
-        <section className="card p-4">
-          <h2 className="mb-3 font-semibold">Annotated video</h2>
-          <video src={api.annotatedVideoUrl(analysis.id)} controls className="max-h-[480px] w-full rounded-lg bg-black" />
-        </section>
-      )}
-
-      {!noResults && (
-        <div className="grid gap-5 lg:grid-cols-2">
-          <section className="card p-4">
-            <h2 className="mb-3 font-semibold">Vehicles by area &amp; type</h2>
-            <StackedBars rows={summary.areas} />
-          </section>
-
-          <section className="card p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="font-semibold">Direction of travel</h2>
-              <select className="input w-auto" value={dirArea} onChange={(e) => setDirArea(e.target.value)}>
-                {areaNames.map((n) => <option key={n}>{n}</option>)}
-              </select>
-            </div>
-            <SimpleBars items={dirItems} />
-            <p className="mt-2 text-xs text-ink-3">Compass directions are relative to the image (N = towards the top of the frame).</p>
-          </section>
-
-          {summary.lines.length > 0 && (
-            <section className="card p-4">
-              <h2 className="mb-3 font-semibold">Counting lines</h2>
-              <StackedBars rows={summary.lines.flatMap((l) =>
-                Object.entries(l.by_direction_type ?? {}).map(([d, byType]) => ({ name: `${l.name} · ${d}`, by_type: byType })),
-              )} />
-            </section>
-          )}
-
-          <section className="card p-4 lg:col-span-2">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="font-semibold">Vehicles over time <span className="font-normal text-ink-3">· per {formatBin(summary.time_bin_seconds)}</span></h2>
-              <select className="input w-auto" value={timeSource} onChange={(e) => setTimeSource(e.target.value)}>
-                {sources.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-              </select>
-            </div>
-            <TimeColumns rows={timeRows} />
-          </section>
-        </div>
-      )}
-
-      {!noResults && (
-        <section className="card overflow-x-auto p-4">
-          <h2 className="mb-3 font-semibold">Summary table</h2>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-line text-left text-xs text-ink-3">
-                <th className="py-1.5 pr-3 font-medium">Area / line</th>
-                {types.map((t) => (
-                  <th key={t} className="px-2 py-1.5 text-right font-medium">
-                    <span className="inline-flex items-center gap-1">
-                      <span className="inline-block h-2 w-2 rounded-sm" style={{ background: vehicleColor(t) }} />
-                      {VEHICLE_LABELS[t] ?? t}
+      {tab === "overview" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-3">
+            {[...areas, ...lines.map((l) => ({ ...l, name: `${l.name} (line)` }))].map((e) => (
+              <div key={e.name} className="card min-w-[10rem] flex-1 px-3 py-2"
+                style={{ borderLeft: `5px solid ${countEntries(analysis).find((c) => c.name === e.name.replace(/ \(line\)$/, ""))?.color ?? "var(--border)"}` }}>
+                <div className="truncate text-xs text-ink-3" title={e.name}>{e.name}</div>
+                <div className="text-2xl font-semibold tabular-nums">{e.total}</div>
+                <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-ink-2">
+                  {VEHICLE_TYPES.filter((t) => e.by_type[t]).map((t) => (
+                    <span key={t} className="inline-flex items-center gap-1">
+                      <span className="h-1.5 w-1.5 rounded-sm" style={{ background: vehicleColor(t) }} />
+                      {VEHICLE_LABELS[t]} {e.by_type[t]}
                     </span>
-                  </th>
-                ))}
-                <th className="py-1.5 pl-2 text-right font-medium">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...summary.areas, ...summary.lines.map((l) => ({ ...l, name: `${l.name} (line)` }))].map((row) => (
-                <tr key={row.name} className="border-b border-line last:border-0">
-                  <td className="py-1.5 pr-3">{row.name}</td>
-                  {types.map((t) => (
-                    <td key={t} className="px-2 py-1.5 text-right tabular-nums">{row.by_type[t] ?? 0}</td>
                   ))}
-                  <td className="py-1.5 pl-2 text-right font-medium tabular-nums">{row.total}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                </div>
+              </div>
+            ))}
+            <Tile label="Video processed" value={formatDuration(summary.video_duration_seconds)}
+              sub={`${summary.frames_processed} frames in ${formatDuration(summary.processing_seconds)}` +
+                (summary.processing_seconds > 0 ? ` · ${(summary.video_duration_seconds / summary.processing_seconds).toFixed(1)}× real time` : "")} />
+            {p && (
+              <Tile label="Processing" value={SPEED_LABELS[p.speed] ?? p.speed}
+                sub={`${p.analysed_fps} frames/s analysed · ${p.image_size} px${p.sliced_detection ? " · tiles" : ""} · ${p.tracker}`} />
+            )}
+          </div>
+          {noResults ? (
+            <div className="card p-4 text-sm text-ink-2">
+              No vehicles of the selected types were counted. Try lowering the detection confidence, reducing “min frames in
+              area”, or checking that the areas cover the road.
+            </div>
+          ) : (
+            <SummaryTable rows={[...areas, ...lines.map((l) => ({ ...l, name: `${l.name} (line)` }))]} />
+          )}
+        </div>
+      )}
+
+      {tab === "types" && (
+        <section className="card p-4">
+          <h2 className="mb-3 font-semibold">Vehicles by area &amp; type</h2>
+          <StackedBars rows={[...areas, ...lines.map((l) => ({ ...l, name: `${l.name} (line)` }))]} />
         </section>
       )}
 
-      <VehicleTable analysisId={analysis.id} />
+      {tab === "directions" && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {areas.map((a) => {
+            const src = summary.areas.find((x) => x.name === a.name)!;
+            const byDir = typeFilter.size && src.by_direction_type
+              ? Object.fromEntries(Object.entries(src.by_direction_type).map(([d, bt]) => [d, sum(pick(bt))]))
+              : src.by_direction;
+            const items = DIRECTION_ORDER.filter((d) => byDir[d]).map((d) => ({ label: directionLabel(d), value: byDir[d] }));
+            return (
+              <section key={a.name} className="card p-4">
+                <h2 className="mb-3 font-semibold">{a.name} <span className="font-normal text-ink-3">· {sum(byDir)}</span></h2>
+                {items.length ? <SimpleBars items={items} /> : <p className="text-sm text-ink-3">No vehicles.</p>}
+                {typeFilter.size > 0 && !src.by_direction_type && (
+                  <p className="mt-2 text-xs text-ink-3">This analysis predates per-type directions: showing all types.</p>
+                )}
+              </section>
+            );
+          })}
+          <p className="text-xs text-ink-3 lg:col-span-2">Compass directions are relative to the image (N = towards the top of the frame).</p>
+        </div>
+      )}
+
+      {tab === "time" && (
+        <div className="space-y-4">
+          {sources.filter((s) => !areaFilter || s.key === areaFilter).map((s) => (
+            <section key={s.key} className="card p-4">
+              <h2 className="mb-3 font-semibold">{s.label} <span className="font-normal text-ink-3">· per {formatBin(summary.time_bin_seconds)}</span></h2>
+              <TimeColumns rows={fillTimeRows(summary, s.key).map((r) => ({ ...r, by_type: pick(r.by_type) }))} />
+            </section>
+          ))}
+        </div>
+      )}
+
+      {tab === "vehicles" && (
+        <VehicleTable analysisId={analysis.id}
+          zoneId={areaFilter.startsWith("area:") ? summary.areas.find((a) => `area:${a.name}` === areaFilter)?.id : undefined}
+          types={typeFilter} />
+      )}
+
+      {tab === "lines" && (
+        <section className="card p-4">
+          <h2 className="mb-3 font-semibold">Counting lines by direction</h2>
+          <StackedBars rows={lines.flatMap((l) =>
+            Object.entries(summary.lines.find((x) => x.name === l.name)?.by_direction_type ?? {}).map(([d, byType]) => ({
+              name: `${l.name} · ${d}`, by_type: pick(byType),
+            })),
+          )} />
+        </section>
+      )}
+
+      {tab === "movements" && (
+        <section className="card p-4">
+          <h2 className="mb-3 font-semibold">Movements (from road → to road)</h2>
+          <StackedBars rows={movements.map((m) => ({ name: `${m.from} → ${m.to}`, by_type: pick(m.by_type) }))} />
+        </section>
+      )}
+
+      {tab === "video" && analysis.has_annotated_video && (
+        <section className="card p-4">
+          <video src={api.annotatedVideoUrl(analysis.id)} controls className="max-h-[560px] w-full rounded-lg bg-black" />
+        </section>
+      )}
     </div>
+  );
+}
+
+function SummaryTable({ rows }: { rows: { name: string; total: number; by_type: Record<string, number> }[] }) {
+  const types = presentTypes(rows);
+  return (
+    <section className="card overflow-x-auto p-4">
+      <h2 className="mb-3 font-semibold">Summary table</h2>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-line text-left text-xs text-ink-3">
+            <th className="py-1.5 pr-3 font-medium">Area / line</th>
+            {types.map((t) => (
+              <th key={t} className="px-2 py-1.5 text-right font-medium">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-sm" style={{ background: vehicleColor(t) }} />
+                  {VEHICLE_LABELS[t] ?? t}
+                </span>
+              </th>
+            ))}
+            <th className="py-1.5 pl-2 text-right font-medium">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name} className="border-b border-line last:border-0">
+              <td className="py-1.5 pr-3">{row.name}</td>
+              {types.map((t) => (
+                <td key={t} className="px-2 py-1.5 text-right tabular-nums">{row.by_type[t] ?? 0}</td>
+              ))}
+              <td className="py-1.5 pl-2 text-right font-medium tabular-nums">{row.total}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -330,50 +448,56 @@ interface VehicleRow {
   mean_confidence: number;
 }
 
-function VehicleTable({ analysisId }: { analysisId: string }) {
+function VehicleTable({ analysisId, zoneId, types }: { analysisId: string; zoneId?: string; types: Set<string> }) {
   const [rows, setRows] = useState<VehicleRow[] | null>(null);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const size = 50;
+  const typeKey = [...types].sort().join(",");
+  useEffect(() => setPage(0), [zoneId, typeKey]);
   useEffect(() => {
-    fetch(`/api/analyses/${analysisId}/vehicles?limit=${size}&offset=${page * size}`)
+    // All records of the area once (up to 10k), filtered by type here; pages are client-side.
+    const q = new URLSearchParams({ limit: "10000" });
+    if (zoneId) q.set("zone_id", zoneId);
+    fetch(`/api/analyses/${analysisId}/vehicles?${q}`)
       .then((r) => r.json())
-      .then((d) => {
-        setRows(d.items);
-        setTotal(d.total);
-      });
-  }, [analysisId, page]);
-  if (!rows || total === 0) return null;
+      .then((d) => setRows(d.items));
+  }, [analysisId, zoneId]);
+  if (!rows) return <p className="text-sm text-ink-3">Loading…</p>;
+  const all = types.size ? rows.filter((r) => types.has(r.vehicle_type)) : rows;
+  const total = all.length;
+  const visible = all.slice(page * size, (page + 1) * size);
   return (
     <section className="card overflow-x-auto p-4">
       <h2 className="mb-3 font-semibold">Counted vehicles <span className="font-normal text-ink-3">· {total} area events</span></h2>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-line text-left text-xs text-ink-3">
-            {["Area", "Track", "Type", "Direction", "First seen", "Last seen", "Confidence"].map((h) => (
-              <th key={h} className="py-1.5 pr-3 font-medium">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.zone_name}-${r.track_id}`} className="border-b border-line last:border-0">
-              <td className="py-1 pr-3">{r.zone_name}</td>
-              <td className="py-1 pr-3 tabular-nums">#{r.track_id}</td>
-              <td className="py-1 pr-3">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="inline-block h-2 w-2 rounded-sm" style={{ background: vehicleColor(r.vehicle_type) }} />
-                  {VEHICLE_LABELS[r.vehicle_type] ?? r.vehicle_type}
-                </span>
-              </td>
-              <td className="py-1 pr-3">{directionLabel(r.direction)}</td>
-              <td className="py-1 pr-3 tabular-nums">{formatDuration(r.first_time)}</td>
-              <td className="py-1 pr-3 tabular-nums">{formatDuration(r.last_time)}</td>
-              <td className="py-1 pr-3 tabular-nums">{r.mean_confidence.toFixed(2)}</td>
+      {total === 0 ? <p className="text-sm text-ink-3">No vehicles match the filters.</p> : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-xs text-ink-3">
+              {["Area", "Track", "Type", "Direction", "First seen", "Last seen", "Confidence"].map((h) => (
+                <th key={h} className="py-1.5 pr-3 font-medium">{h}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <tr key={`${r.zone_name}-${r.track_id}`} className="border-b border-line last:border-0">
+                <td className="py-1 pr-3">{r.zone_name}</td>
+                <td className="py-1 pr-3 tabular-nums">#{r.track_id}</td>
+                <td className="py-1 pr-3">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="inline-block h-2 w-2 rounded-sm" style={{ background: vehicleColor(r.vehicle_type) }} />
+                    {VEHICLE_LABELS[r.vehicle_type] ?? r.vehicle_type}
+                  </span>
+                </td>
+                <td className="py-1 pr-3">{directionLabel(r.direction)}</td>
+                <td className="py-1 pr-3 tabular-nums">{formatDuration(r.first_time)}</td>
+                <td className="py-1 pr-3 tabular-nums">{formatDuration(r.last_time)}</td>
+                <td className="py-1 pr-3 tabular-nums">{r.mean_confidence.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       {total > size && (
         <div className="mt-3 flex items-center gap-2 text-sm">
           <button className="btn" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</button>

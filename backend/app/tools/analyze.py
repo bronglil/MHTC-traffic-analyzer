@@ -35,6 +35,8 @@ from app.pipeline.classifier import create_refiner
 from app.pipeline.detector import MotionDetector, YoloDetector
 from app.pipeline.engine import PipelineConfig, RegionDef, run_pipeline
 from app.pipeline.frames import probe
+from app.pipeline.speed import SPEEDS
+from app.pipeline.speed import plan as speed_plan
 from app.pipeline.tracker import create_tracker
 from app.vehicles import ALL_VEHICLE_TYPES, VEHICLE_LABELS
 
@@ -131,14 +133,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--polygon", action="append", metavar="NAME=x,y;x,y;...", help="polygon area (repeatable)")
     p.add_argument("--line", action="append", metavar="NAME=x1,y1,x2,y2", help="counting line (repeatable)")
     p.add_argument("--whole-frame", action="store_true", help="also count the whole picture")
+    p.add_argument("--count", dest="count_rule", choices=["crossing", "entering", "present"], default="crossing",
+                   help="crossing: comes in and leaves the area (default); entering: comes in; present: seen inside")
     p.add_argument("--from", dest="start", type=float, default=0.0, help="start time in seconds")
     p.add_argument("--to", dest="end", type=float, default=None, help="end time in seconds")
     p.add_argument("--detector", choices=["yolo", "motion"], default="yolo")
     p.add_argument("--model", default="yolo11n.pt", help="YOLO weights (file or official name)")
     p.add_argument("--imgsz", type=int, default=None, help="detector resolution (default: from video size)")
-    p.add_argument("--tracker", choices=["bytetrack", "botsort", "iou"], default="bytetrack")
+    p.add_argument("--sliced", action="store_true",
+                   help="also detect on 2x2 tiles (finds small / distant vehicles, slower)")
+    p.add_argument("--low-light", choices=["off", "auto", "on"], default="off",
+                   help="CLAHE contrast boost before detection on dark frames")
+    p.add_argument("--tracker", choices=["bytetrack", "botsort", "iou", "timelapse"], default="bytetrack")
+    p.add_argument("--timelapse", action="store_true",
+                   help="time-lapse / low frame-rate footage (time-lapse tracker, 2-frame minimum in an area)")
     p.add_argument("--camera", choices=["oblique", "overhead"], default="oblique")
     p.add_argument("--stride", type=int, default=1, help="process every Nth frame")
+    p.add_argument("--speed", choices=list(SPEEDS), default="accurate",
+                   help="accurate: every frame; balanced ~15, fast ~10, fastest ~6 analysed frames per second")
     p.add_argument("--confidence", type=float, default=0.3)
     p.add_argument("--types", default=",".join(ALL_VEHICLE_TYPES), help="comma-separated vehicle types")
     p.add_argument("--count-parked", action="store_true", help="also count vehicles that never move")
@@ -162,12 +174,21 @@ def main(argv: list[str] | None = None) -> int:
     imgsz = args.imgsz or (1280 if info.width >= 3000 else 960 if info.width >= 1800 else 640)
     print(f"{args.video}: {info.width}x{info.height} @ {info.fps:.2f} fps, {info.duration:.1f} s")
     print(f"Detector {args.detector}" + (f" ({args.model}, {imgsz}px)" if args.detector == "yolo" else "")
-          + f", tracker {args.tracker}, {args.camera} camera, {args.start:g}-{args.end or info.duration:g} s")
+          + f", tracker {args.tracker}, {args.camera} camera, count rule '{args.count_rule}', "
+          + f"{args.start:g}-{args.end or info.duration:g} s")
 
+    if args.timelapse:
+        args.tracker = "timelapse"
+    sp = speed_plan(args.speed, info.fps, args.stride, imgsz, args.sliced, args.tracker, args.timelapse)
+    args.stride, imgsz, args.sliced, args.tracker = sp.frame_stride, sp.image_size, sp.sliced, sp.tracker
+    if args.speed != "accurate":
+        print(f"Speed '{args.speed}': every {sp.frame_stride} frame(s) ({sp.analysed_fps:.1f} per second of video), "
+              f"{imgsz}px, sliced {'on' if sp.sliced else 'off'}, tracker {sp.tracker}")
     if args.detector == "motion":
         detector, classification = MotionDetector(), "detector"
     else:
-        detector, classification = YoloDetector(args.model, confidence=min(0.1, args.confidence), image_size=imgsz), "size"
+        detector, classification = YoloDetector(args.model, confidence=min(0.1, args.confidence), image_size=imgsz,
+                                tiles=2 if args.sliced else 1), "size"
     cfg = PipelineConfig(
         vehicle_types=[t.strip() for t in args.types.split(",") if t.strip()],
         regions=regions,
@@ -175,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
         frame_stride=args.stride,
         anchor="center" if args.camera == "overhead" else "bottom_center",
         count_stationary=args.count_parked,
+        min_frames_in_zone=2 if args.timelapse else None,
+        count_rule=args.count_rule,
+        low_light=args.low_light,
         start_seconds=args.start,
         end_seconds=args.end,
         annotated_video_path=args.annotate,
@@ -189,10 +213,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {pct * 100:5.1f}%  frame {frame}", file=sys.stderr)
 
     result = run_pipeline(
-        args.video, cfg, detector, create_tracker(args.tracker, info.fps / args.stride, args.confidence),
+        args.video, cfg, detector, create_tracker(args.tracker, info.fps / args.stride, args.confidence, sp.buffer),
         on_progress=progress, refiner=create_refiner(classification, info.height),
     )
-    print(f"Processed {result.frames_processed} frames in {time.monotonic() - started:.1f} s")
+    took = time.monotonic() - started
+    span = (args.end or info.duration) - args.start
+    print(f"Processed {result.frames_processed} frames in {took:.1f} s ({span / max(took, 1e-6):.1f}x real time)")
     print_report(result, regions, whole_frame)
     if args.annotate:
         from app.workers.worker import _transcode_for_web

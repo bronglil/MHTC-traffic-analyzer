@@ -9,9 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import analyses, videos
+from app.api import analyses, batches, videos
 from app.config import get_settings
 from app.db import init_db
+from app.pipeline.speed import SPEEDS
 from app.pipeline.tracker import TRACKER_TYPES
 from app.vehicles import ALL_VEHICLE_TYPES
 
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(videos.router)
     app.include_router(analyses.router)
+    app.include_router(batches.router)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -51,7 +53,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/meta")
     def meta() -> dict:
-        return {"vehicle_types": ALL_VEHICLE_TYPES, "trackers": list(TRACKER_TYPES), "default_model": settings.model_path}
+        return {"vehicle_types": ALL_VEHICLE_TYPES, "trackers": list(TRACKER_TYPES), "default_model": settings.model_path,
+                "speeds": list(SPEEDS), "import_folder": bool(settings.import_dir)}
 
     # Serve the built frontend (frontend/dist) when present, for single-container deploys.
     dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"

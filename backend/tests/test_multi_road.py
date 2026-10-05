@@ -36,9 +36,9 @@ def road(arm: str, name: str | None = None, role: str = "count") -> RegionDef:
                      role=role)
 
 
-def run(regions, tracker, include_whole_frame=False):
+def run(regions, tracker, include_whole_frame=False, count_rule="present"):
     cfg = PipelineConfig(vehicle_types=["car", "bus"], regions=regions, include_whole_frame=include_whole_frame,
-                         anchor="center")
+                         anchor="center", count_rule=count_rule)
     # Colour-blob detector: knows cars (green) from buses (blue) in this synthetic clip.
     return run_pipeline(str(VIDEO), cfg, FakeDetector(), create_tracker(tracker, FPS, 0.3))
 
@@ -99,4 +99,11 @@ def test_motion_detector_counts_selected_roads(tracker):
     cfg = PipelineConfig(vehicle_types=["car"], regions=[road("North"), road("East")], include_whole_frame=False,
                          anchor="center")
     result = run_pipeline(str(VIDEO), cfg, MotionDetector(), create_tracker(tracker, FPS, 0.3))
+    assert Counter(c["zone_name"] for c in result.zone_counts) == {"North Road": 2, "East Road": 3}
+
+
+@pytest.mark.parametrize("tracker", TRACKERS)
+def test_crossing_rule_counts_vehicles_driving_through_each_road(tracker):
+    """Default UI rule: each vehicle drives into view, along a road arm and out of it."""
+    result = run([road("North"), road("East")], tracker, count_rule="crossing")
     assert Counter(c["zone_name"] for c in result.zone_counts) == {"North Road": 2, "East Road": 3}

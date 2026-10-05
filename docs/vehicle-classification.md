@@ -118,6 +118,20 @@ doesn't classify, so every vehicle is reported as `car` unless a crop
 classifier is configured. Set **Camera view → Overhead** so the box centre is
 used as the ground point.
 
+## Night footage
+
+Detectors trained mostly on daylight photos see a night frame as a few bright headlights and street
+lamps. In our tests, in order of effect:
+
+1. **Sliced detection** (*Detect small / distant vehicles*) gives the biggest gain, because night vehicles
+   are mostly small and distant: +64% vehicles found on the night bridge clip.
+2. **Higher detection resolution** (1280 px) helps for the same reason.
+3. **CLAHE low-light enhancement** helps on dark, unlit roads, but was neutral on a street-lit bridge. It's
+   available as an option and off by default.
+4. **Fine-tuning on night images** is what fixes oncoming cars blinded by their own headlights. Add night
+   clips from your sites (and, e.g., the night split of the BDD100K driving dataset) to the training
+   data described above.
+
 ## Proving accuracy: ground-truth clips
 
 `backend/tests/data/videos/` holds short clips with **hand-counted** ground

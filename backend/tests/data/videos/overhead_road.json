@@ -201,6 +201,19 @@
       "note": "Every 3rd frame: fast vehicles can lose their track right at the line, so allow ±1."
     },
     {
+      "name": "motion-crossing-fastest",
+      "detector": "motion",
+      "count_rule": "crossing",
+      "anchor": "center",
+      "trackers": [
+        "timelapse"
+      ],
+      "strides": [
+        5
+      ],
+      "note": "'fastest' speed preset"
+    },
+    {
       "name": "yolo11n-coco",
       "detector": "yolo",
       "model": "yolo11n.pt",
