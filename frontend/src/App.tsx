@@ -1,7 +1,10 @@
-import { Link, Route, Routes } from "react-router-dom";
+import { Link, NavLink, Route, Routes } from "react-router-dom";
 import VideosPage from "./pages/VideosPage";
 import WorkspacePage from "./pages/WorkspacePage";
 import AnalysisPage from "./pages/AnalysisPage";
+import BatchNewPage from "./pages/BatchNewPage";
+import BatchPage from "./pages/BatchPage";
+import BatchesPage from "./pages/BatchesPage";
 
 export default function App() {
   return (
@@ -16,7 +19,15 @@ export default function App() {
             </svg>
             Traffic Vision
           </Link>
-          <span className="text-sm text-ink-3">Vehicle detection, tracking &amp; counting</span>
+          <span className="hidden text-sm text-ink-3 sm:inline">Vehicle detection, tracking &amp; counting</span>
+          <nav className="ml-auto flex gap-1 text-sm">
+            {[["/", "Videos"], ["/batches", "Batches"]].map(([to, label]) => (
+              <NavLink key={to} to={to} end={to === "/"}
+                className={({ isActive }) => `rounded-md px-2.5 py-1 ${isActive ? "bg-surface font-medium" : "text-ink-2 hover:bg-surface"}`}>
+                {label}
+              </NavLink>
+            ))}
+          </nav>
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6">
@@ -24,6 +35,9 @@ export default function App() {
           <Route path="/" element={<VideosPage />} />
           <Route path="/videos/:videoId" element={<WorkspacePage />} />
           <Route path="/analyses/:analysisId" element={<AnalysisPage />} />
+          <Route path="/batches" element={<BatchesPage />} />
+          <Route path="/batches/new" element={<BatchNewPage />} />
+          <Route path="/batches/:batchId" element={<BatchPage />} />
           <Route path="*" element={<p className="text-ink-2">Page not found.</p>} />
         </Routes>
       </main>

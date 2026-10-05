@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     # SQLite is accepted for local development and tests.
     database_url: str = "sqlite:///./data/traffic_vision.db"
     data_dir: Path = Path("./data")
-    max_upload_mb: int = 4096
+    max_upload_mb: int = 16384
+    # Folder of videos that can be registered without uploading them through the
+    # browser (e.g. hours-long survey footage); mounted read-only in Docker.
+    import_dir: Path | None = None
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     # Detection / tracking defaults (overridable per analysis)

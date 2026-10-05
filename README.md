@@ -34,16 +34,21 @@ and you can also generate an annotated video.
   (one sheet per table) and **JSON**.
 - Optional **annotated video**: boxes, class, track ID, ROIs, lines, direction
   and running counts.
+- **Results in tabs** (Overview, By vehicle type, Directions, Over time, Counted vehicles, Counting
+  lines, Movements, Annotated video), with area and vehicle-type filters that apply to every tab.
+- **Batches**: upload many videos at once (or import them from a folder), draw each one's roads (or
+  copy them from another video), then run them all one after another, each with its own report.
+- **Processing speed** presets (Accurate / Balanced / Fast / Fastest) for hours-long footage.
 
 ## Counting specific roads
 
 If the camera shows several roads but you only want some of them:
 
 1. Choose **Draw road (rectangle)** and drag a box over each road you want to
-   count; the box shows in translucent red while you drag. Use **Draw area (polygon)** for curved or
-   angled roads. The video opens in **🔒 View** mode, where clicks and drags do nothing, so an area can't
-   be drawn or moved by accident. Each drawing tool works like picking up a pen: it draws one shape
-   (at least 20 px) and goes back to View. Use **✎ Edit shapes** to move or reshape an area.
+   count; the box shows in translucent red while you drag (at least 20 px). Use **Draw area (polygon)**
+   for curved or angled roads and **Draw counting line** (click the start, then the end) for a gate.
+   After each shape the editor returns to **Select / edit**: click a shape to select it, drag it or its
+   corner points to adjust it, and press Delete to remove it.
 2. A popup asks for a **name** for each one (e.g. "A40 inbound", "High
    Street"). Names must be unique per video.
 3. Each road gets its own **colour**, used in the editor, the live view, the
@@ -57,14 +62,19 @@ If the camera shows several roads but you only want some of them:
 
 | Option | Counted | Not counted |
 |---|---|---|
-| **crosses the area** (default) | comes in from outside the box **and** leaves it again | already inside when the video (or the time range) starts; stops, parks or queues inside; dips in and backs out the same side; never enters |
+| **crosses the area** (default) | comes in from outside the box **and** leaves it again (see below) | stops, parks or queues inside; dips in and backs out the same side; never enters |
 | **enters the area** | comes in from outside, even if it then stays | already inside; never enters |
 | **is seen in the area** | is inside the box: passing through, or for at least *Min seconds in area* | never inside; parked (unless ticked) |
 
 If a box touches the edge of the picture, the edge counts as "outside": a vehicle driving into or out of
-view through the box is entering or leaving it. Use **is seen in the area** for outlines that run to the
-horizon, where vehicles shrink away inside the area instead of leaving it. Whole Frame always uses
-*is seen*.
+view through the box is entering or leaving it. Whole Frame always uses *is seen*.
+
+A tracked vehicle isn't always seen on both sides of an area: it can fade out in the distance inside an
+outline that runs to the horizon, it can already be in the box when the analysed period starts, or at
+night its track can start late. **Crossing** therefore also counts a vehicle whose path covers at least
+**60 %** of the area along its direction of travel (60 % so one vehicle split into two tracks can't count
+twice). A vehicle already inside when the period starts counts if it then completes its crossing, like
+a manual survey count, so consecutive periods add up.
 
 Each vehicle counts at most once per area, split by vehicle type and direction. The details:
 
@@ -86,6 +96,58 @@ final counts afterwards.
 *(Optional, API only)* Areas also take a `role` of `in`, `out` or `both`. With
 roles set, origin → destination **movements** (turning counts) are reported
 too.
+
+## Many videos: batches
+
+1. **Upload**: drop or choose many videos at once on the **Videos** page. They upload one after another.
+   For very large files, use the import folder instead (below).
+2. **Draw**: open each video and draw its roads. **Next →** / **← Previous** step through the videos.
+   Videos from the same camera position can reuse another video's roads with **Copy areas from another
+   video…** (positions are stored relative to the picture, so they fit any resolution). A video with no
+   roads drawn counts its **whole frame**.
+3. **Run**: tick the videos (or **Select all**), click **▶ Run N selected**, choose the settings once
+   and click **Run batch**. Videos are processed one by one in upload order.
+4. **Results**: the batch page shows each video's status, time taken and counts per road and type,
+   filtered by status (running, waiting, completed, failed). **Report** opens a video's full results.
+   **All videos (XLSX/CSV)** downloads one table with a row per video and road. **Every report (ZIP)**
+   holds that table plus each video's own Excel report. **Run failed / cancelled again** re-queues only
+   those videos.
+
+### Very long videos: the import folder
+
+Uploading hours of footage through the browser is slow. Copy the files into the `videos` folder next to
+`docker-compose.yml` instead (sub-folders are fine), then click **Import N new** on the Videos page. The
+files are read in place (mounted read-only) and are not copied. Deleting such a video in the app leaves
+the file alone.
+
+## Processing speed
+
+Almost all the time goes into the detector, once per analysed frame. Pick a preset per run or batch:
+
+| Speed | Frames analysed | Other changes | Typical speed-up* |
+|---|---|---|---|
+| **Accurate** | every frame | none | 1× |
+| **Balanced** (default) | ~15 per second of video | none | ~2× |
+| **Fast** | ~10 per second | no tile scan, ≤ 960 px | ~2.5× (SD) to ~6× (HD with tile scan) |
+| **Fastest** | ~6 per second | no tile scan, 640 px, time-lapse tracker | ~3× (SD) to ~10× (HD) |
+
+\*Measured on CPU. Counts stay correct when frames are skipped. A vehicle that jumps right across an
+area between two analysed frames still counts as passing through it. The trackers get the effective
+frame rate and use **buffered-IoU matching** (Yang et al., 2023): boxes are enlarged for matching only,
+in proportion to the frames skipped, so fast vehicles still overlap from one analysed frame to the next.
+A track that is confirmed a few frames after a vehicle enters the picture is still recognised as coming
+into view. Below ~8 analysed frames per second the time-lapse tracker (position + colour) takes over.
+The ground-truth clips are tested at all four presets and give exact counts.
+
+While running, the progress line shows the speed (e.g. `2.4× real time`) and the time left. To go
+faster:
+
+- **GPU**: with an NVIDIA card, start with
+  `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`. This needs the NVIDIA
+  driver plus the NVIDIA Container Toolkit (Linux) or WSL 2 GPU support (Windows). It is typically 10–30×
+  faster than CPU.
+- **More workers**: `docker compose up -d --scale worker=2` processes two videos of a batch at once.
+  Each worker uses all CPU cores, so more than two rarely helps without a GPU.
 
 ## Processing pipeline
 
@@ -151,7 +213,7 @@ In Docker Desktop you'll see a project **mhtc-traffic-analyzer** with four conta
 | `docker compose up -d` | Start again later (no rebuild) |
 | `git pull && docker compose up --build -d` | Update to the latest version |
 | `docker compose logs -f worker` | Watch the analysis worker |
-| `docker compose up -d --scale worker=3` | Process several videos in parallel |
+| `docker compose up -d --scale worker=2` | Process two videos of a batch at the same time |
 | `docker compose down` | Stop (videos, results and the database are kept) |
 | `docker compose down -v` | Stop and **delete** all data |
 
@@ -248,7 +310,8 @@ Right carriageway      0  -                               -
 Slip road              1  Car 1                           SE 1
 ```
 
-Options: `--count crossing|entering|present` (default `crossing`), `--timelapse`, `--sliced`,
+Options: `--count crossing|entering|present` (default `crossing`), `--speed accurate|balanced|fast|fastest`,
+`--timelapse`, `--sliced`,
 `--low-light off|auto|on`,
 `--polygon "Name=x,y;x,y;..."` for angled roads, `--line "Name=x1,y1,x2,y2"` for counting
 lines, `--camera overhead`, `--detector motion`, `--tracker iou`, `--imgsz 1280`, and
@@ -357,6 +420,12 @@ Frontend:
 | `GET` | `/api/analyses/{id}/export?format=csv\|csv_bundle\|xlsx\|json` | Download results |
 | `GET` | `/api/analyses/{id}/annotated-video` | Annotated or pipeline video |
 | `POST` | `/api/analyses/{id}/cancel` | Cancel |
+| `POST` | `/api/videos/{id}/regions/copy` | Copy another video's areas and lines |
+| `GET/POST` | `/api/videos/import` | List / register files in the import folder (`TV_IMPORT_DIR`) |
+| `POST` | `/api/batches` | Queue many videos with one set of settings (each keeps its own areas) |
+| `GET` | `/api/batches`, `/api/batches/{id}` | Batch list; per-video status and counts |
+| `POST` | `/api/batches/{id}/cancel`, `/retry` | Cancel remaining; re-queue failed / cancelled |
+| `GET` | `/api/batches/{id}/export?format=xlsx\|csv\|zip` | One table for all videos; zip adds each video's report |
 
 Interactive docs are at `/docs` when the API is running.
 

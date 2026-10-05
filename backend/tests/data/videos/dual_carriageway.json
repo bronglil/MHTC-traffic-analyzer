@@ -154,6 +154,35 @@
         2
       ],
       "tolerance": 0
+    },
+    {
+      "name": "yolo11n-crossing",
+      "detector": "yolo",
+      "model": "yolo11n.pt",
+      "count_rule": "crossing",
+      "trackers": [
+        "bytetrack",
+        "botsort"
+      ],
+      "strides": [
+        1,
+        2,
+        3
+      ],
+      "note": "Default UI rule; strides 2 and 3 are the 'balanced' and 'fast' speed presets at 30 fps"
+    },
+    {
+      "name": "yolo11n-crossing-fastest",
+      "detector": "yolo",
+      "model": "yolo11n.pt",
+      "count_rule": "crossing",
+      "trackers": [
+        "timelapse"
+      ],
+      "strides": [
+        5
+      ],
+      "note": "'fastest' speed preset: 6 analysed frames per second switches to the time-lapse tracker"
     }
   ]
 }

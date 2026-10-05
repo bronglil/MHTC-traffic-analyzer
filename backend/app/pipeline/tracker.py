@@ -45,9 +45,18 @@ class _DetBatch:
 
 
 class UltralyticsTracker:
-    """ByteTrack or BoT-SORT, using the implementations shipped with ultralytics."""
+    """ByteTrack or BoT-SORT, using the implementations shipped with ultralytics.
 
-    def __init__(self, kind: str = "bytetrack", frame_rate: float = 30.0, confidence: float | None = None) -> None:
+    ``buffer`` enlarges every box by that fraction of its size on each side before
+    matching and shrinks the tracker's output back (buffered IoU, Yang et al. 2023,
+    "Hard to Track Objects with Irregular Motions and Similar Appearances? Make It
+    Easier by Buffering the Matching Space"). When frames are skipped a vehicle can
+    move more than its own length between analysed frames, so plain boxes stop
+    overlapping and tracks break; buffered boxes still overlap.
+    """
+
+    def __init__(self, kind: str = "bytetrack", frame_rate: float = 30.0, confidence: float | None = None,
+                 buffer: float = 0.0) -> None:
         from ultralytics.trackers.bot_sort import BOTSORT
         from ultralytics.trackers.byte_tracker import BYTETracker
         from ultralytics.utils import IterableSimpleNamespace, YAML
@@ -73,6 +82,7 @@ class UltralyticsTracker:
             cfg["track_buffer"] = max(1, round(cfg["track_buffer"] * fps / 30))
             self._tracker = cls(IterableSimpleNamespace(**cfg))
         self._types: list[str] = []
+        self.buffer = max(0.0, buffer)
 
     def update(self, detections: list[Detection], image: np.ndarray) -> list[TrackedObject]:
         self._types = sorted(set(self._types) | {d.vehicle_type for d in detections})
@@ -81,6 +91,9 @@ class UltralyticsTracker:
             xyxy = np.array([[d.x1, d.y1, d.x2, d.y2] for d in detections], dtype=np.float32)
             conf = np.array([d.confidence for d in detections], dtype=np.float32)
             cls = np.array([type_idx[d.vehicle_type] for d in detections], dtype=np.float32)
+            if self.buffer:
+                wh = (xyxy[:, 2:] - xyxy[:, :2]) * self.buffer
+                xyxy = np.concatenate([xyxy[:, :2] - wh, xyxy[:, 2:] + wh], axis=1)
         else:
             xyxy = np.zeros((0, 4), dtype=np.float32)
             conf = np.zeros((0,), dtype=np.float32)
@@ -89,6 +102,10 @@ class UltralyticsTracker:
         results = []
         for row in out:
             x1, y1, x2, y2, tid, score, c = row[:7]
+            if self.buffer:  # undo the buffering: w_out = w * (1 + 2b) around the same centre
+                k = self.buffer / (1 + 2 * self.buffer)
+                bw, bh = (x2 - x1) * k, (y2 - y1) * k
+                x1, y1, x2, y2 = x1 + bw, y1 + bh, x2 - bw, y2 - bh
             results.append(
                 TrackedObject(int(tid), float(x1), float(y1), float(x2), float(y2), float(score), self._types[int(c)])
             )
@@ -254,9 +271,10 @@ class TimelapseTracker:
         return out
 
 
-def create_tracker(kind: str, frame_rate: float, confidence: float) -> Tracker:
+def create_tracker(kind: str, frame_rate: float, confidence: float, buffer: float = 0.0) -> Tracker:
+    """``buffer``: box enlargement for matching (ByteTrack / BoT-SORT), see UltralyticsTracker."""
     if kind == "timelapse":
         return TimelapseTracker(confidence=confidence)
     if kind == "iou":
         return IoUTracker(max_age=max(1, round(frame_rate)), confidence=confidence)
-    return UltralyticsTracker(kind, frame_rate, confidence)
+    return UltralyticsTracker(kind, frame_rate, confidence, buffer)

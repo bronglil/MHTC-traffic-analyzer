@@ -8,3 +8,6 @@ node_modules/
 frontend/dist/
 *.tsbuildinfo
 .env
+# survey footage dropped into the import folder
+/videos/*
+!/videos/README.txt

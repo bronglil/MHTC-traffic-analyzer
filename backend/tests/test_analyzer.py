@@ -245,6 +245,59 @@ def test_crossing_through_picture_edge():
     assert [c.track_id for c in a.zone_counts] == [1]
 
 
+WIDE_BOX = ZoneSpec("wide", "Wide box", ((40, 20), (160, 20), (160, 80), (40, 80)))  # 120 px along x
+
+
+def _crossing(tracks, start_offset=5):
+    """tracks: {tid: [(frame, x, y)]}; an unrelated car at frame 0 sets the period start."""
+    a = TrafficAnalyzer((200, 100), [WIDE_BOX], count_rule="crossing", track_timeout_frames=3)
+    a.update(0, 0, [obj(99, 5, 95)])
+    last = max(f for pts in tracks.values() for f, _, _ in pts)
+    for f in range(start_offset, last + 5):
+        a.update(f, f / 10, [obj(t, x, y) for t, pts in tracks.items() for (g, x, y) in pts if g == f])
+    a.finish()
+    return sorted(c.track_id for c in a.zone_counts if c.zone_id == "wide")
+
+
+def test_crossing_counts_a_track_that_starts_inside_but_covers_most_of_the_area():
+    # Night / distant vehicle: first detected 10 px inside the box, drives out the far side.
+    covers = {1: [(f, 50 + (f - 5) * 8, 50) for f in range(5, 25)]}
+    assert _crossing(covers) == [1]
+    # Detected only for the last 30 % of the box: it did not cross the area.
+    partial = {2: [(f, 125 + (f - 5) * 8, 50) for f in range(5, 15)]}
+    assert _crossing(partial) == []
+
+
+def test_crossing_counts_a_track_that_fades_out_inside_the_far_end():
+    # Comes in from outside and is lost 10 px before the far side (vehicle shrinks away).
+    fades = {3: [(f, 20 + (f - 5) * 6, 50) for f in range(5, 27)]}  # last x = 146 < 160
+    assert _crossing(fades) == [3]
+    # ...but one that stops a third of the way in is still not counted.
+    stops = {4: [(f, 20 + min(f - 5, 10) * 6, 50) for f in range(5, 30)]}  # stops at x = 80
+    assert _crossing(stops) == []
+
+
+def test_crossing_counts_vehicle_inside_when_the_period_starts_that_then_leaves():
+    a = TrafficAnalyzer((200, 100), [MID_BOX], count_rule="crossing", track_timeout_frames=3)
+    for f in range(12):                      # inside at the first analysed frame, drives out
+        a.update(f, f, [obj(1, 100 + f * 5, 50)])
+    a.finish()
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+
+def test_track_confirmed_late_after_driving_into_view_counts_as_entering():
+    """Trackers confirm a track a few frames after a vehicle appears; with frames skipped it is
+    already well inside the picture (and inside a box at the picture edge) when first seen."""
+    top_box = ZoneSpec("top", "Top box", ((60, 0), (140, 0), (140, 60), (60, 60)))
+    a = TrafficAnalyzer((200, 100), [top_box], count_rule="crossing", track_timeout_frames=3)
+    a.update(0, 0, [obj(99, 5, 95)])         # the period started earlier
+    for f in range(5, 16):                   # first box spans y 20..30, moving down 9 px per sample
+        y = 30 + (f - 5) * 9
+        a.update(f, f / 10, [TrackedObject(1, 95, y - 10, 105, y, 0.9, "car")])
+    a.finish()
+    assert [c.track_id for c in a.zone_counts if c.zone_id == "top"] == [1]
+
+
 def test_unknown_count_rule_rejected():
     import pytest
 

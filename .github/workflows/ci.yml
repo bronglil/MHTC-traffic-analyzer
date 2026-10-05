@@ -1,12 +1,23 @@
 name: CI
 
+# Branch pushes and their pull request used to start two identical runs each, and the
+# queued duplicates left the browser-test job waiting for a runner until it was cancelled.
+# Now: pushes to main, pull requests, feature/* pushes, or a manual run; a newer run of
+# the same branch cancels the older one.
 on:
   push:
+    branches: [main, "feature/**"]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
@@ -28,7 +39,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    needs: backend
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

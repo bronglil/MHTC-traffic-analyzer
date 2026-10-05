@@ -35,6 +35,8 @@ from app.pipeline.classifier import create_refiner
 from app.pipeline.detector import MotionDetector, YoloDetector
 from app.pipeline.engine import PipelineConfig, RegionDef, run_pipeline
 from app.pipeline.frames import probe
+from app.pipeline.speed import SPEEDS
+from app.pipeline.speed import plan as speed_plan
 from app.pipeline.tracker import create_tracker
 from app.vehicles import ALL_VEHICLE_TYPES, VEHICLE_LABELS
 
@@ -147,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="time-lapse / low frame-rate footage (time-lapse tracker, 2-frame minimum in an area)")
     p.add_argument("--camera", choices=["oblique", "overhead"], default="oblique")
     p.add_argument("--stride", type=int, default=1, help="process every Nth frame")
+    p.add_argument("--speed", choices=list(SPEEDS), default="accurate",
+                   help="accurate: every frame; balanced ~15, fast ~10, fastest ~6 analysed frames per second")
     p.add_argument("--confidence", type=float, default=0.3)
     p.add_argument("--types", default=",".join(ALL_VEHICLE_TYPES), help="comma-separated vehicle types")
     p.add_argument("--count-parked", action="store_true", help="also count vehicles that never move")
@@ -175,6 +179,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.timelapse:
         args.tracker = "timelapse"
+    sp = speed_plan(args.speed, info.fps, args.stride, imgsz, args.sliced, args.tracker, args.timelapse)
+    args.stride, imgsz, args.sliced, args.tracker = sp.frame_stride, sp.image_size, sp.sliced, sp.tracker
+    if args.speed != "accurate":
+        print(f"Speed '{args.speed}': every {sp.frame_stride} frame(s) ({sp.analysed_fps:.1f} per second of video), "
+              f"{imgsz}px, sliced {'on' if sp.sliced else 'off'}, tracker {sp.tracker}")
     if args.detector == "motion":
         detector, classification = MotionDetector(), "detector"
     else:
@@ -204,10 +213,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {pct * 100:5.1f}%  frame {frame}", file=sys.stderr)
 
     result = run_pipeline(
-        args.video, cfg, detector, create_tracker(args.tracker, info.fps / args.stride, args.confidence),
+        args.video, cfg, detector, create_tracker(args.tracker, info.fps / args.stride, args.confidence, sp.buffer),
         on_progress=progress, refiner=create_refiner(classification, info.height),
     )
-    print(f"Processed {result.frames_processed} frames in {time.monotonic() - started:.1f} s")
+    took = time.monotonic() - started
+    span = (args.end or info.duration) - args.start
+    print(f"Processed {result.frames_processed} frames in {took:.1f} s ({span / max(took, 1e-6):.1f}x real time)")
     print_report(result, regions, whole_frame)
     if args.annotate:
         from app.workers.worker import _transcode_for_web

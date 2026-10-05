@@ -30,6 +30,8 @@ class Video(Base):
     fps: Mapped[float] = mapped_column(Float, default=0.0)
     frame_count: Mapped[int] = mapped_column(Integer, default=0)
     duration_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    # Registered in place from the import folder (TV_IMPORT_DIR): the file is not ours to delete.
+    imported: Mapped[bool | None] = mapped_column(default=False, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     regions: Mapped[list[Region]] = relationship(
@@ -60,11 +62,28 @@ class Region(Base):
     video: Mapped[Video] = relationship(back_populates="regions")
 
 
+class Batch(Base):
+    """Many videos analysed one after another with the same settings; each video
+    keeps its own areas/lines (or the whole frame when it has none) and report."""
+
+    __tablename__ = "batches"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200))
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    analyses: Mapped[list[Analysis]] = relationship(back_populates="batch", order_by="Analysis.batch_position")
+
+
 class Analysis(Base):
     __tablename__ = "analyses"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     video_id: Mapped[str] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"), index=True)
+    batch_id: Mapped[str | None] = mapped_column(ForeignKey("batches.id", ondelete="SET NULL"), nullable=True,
+                                                 index=True)
+    batch_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -84,6 +103,7 @@ class Analysis(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     video: Mapped[Video] = relationship(back_populates="analyses")
+    batch: Mapped[Batch | None] = relationship(back_populates="analyses")
     zone_counts: Mapped[list[ZoneCountRecord]] = relationship(
         cascade="all, delete-orphan", order_by="ZoneCountRecord.first_time"
     )

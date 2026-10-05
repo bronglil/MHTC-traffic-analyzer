@@ -15,7 +15,7 @@ from app.api.videos import get_video_or_404
 from app.colors import REGION_COLORS
 from app.config import get_settings
 from app.db import get_db, get_sessionmaker
-from app.models import Analysis, line_dict, movement_dict, zone_dict
+from app.models import Analysis, Region, Video, line_dict, movement_dict, zone_dict
 from app.pipeline.annotate import STAGES
 from app.reporting import exporters
 from app.schemas import AnalysisOut, AnalysisResults, AnalysisSettings
@@ -50,6 +50,14 @@ def create_analysis(video_id: str, body: AnalysisSettings, db: Session = Depends
         regions = [r for r in regions if r.id in wanted]
     if body.start_seconds >= max(video.duration_seconds, 0.001):
         raise HTTPException(422, f"start_seconds is past the end of the video ({video.duration_seconds:.1f} s)")
+    analysis = new_analysis(video, body, regions)
+    db.add(analysis)
+    db.commit()
+    return _out(analysis)
+
+
+def new_analysis(video: Video, body: AnalysisSettings, regions: list[Region], **extra) -> Analysis:
+    """A queued analysis with a snapshot of the settings and the video's areas/lines."""
     config = body.model_dump(exclude={"region_ids"})
     config["regions"] = [
         {"id": r.id, "name": r.name, "kind": r.kind, "points": r.points,
@@ -58,10 +66,7 @@ def create_analysis(video_id: str, body: AnalysisSettings, db: Session = Depends
          "label_forward": r.label_forward, "label_backward": r.label_backward}
         for i, r in enumerate(regions)
     ]
-    analysis = Analysis(video_id=video_id, config=config, live_counts={}, message="Queued")
-    db.add(analysis)
-    db.commit()
-    return _out(analysis)
+    return Analysis(video_id=video.id, config=config, live_counts={}, message="Queued", **extra)
 
 
 @router.get("/api/videos/{video_id}/analyses", response_model=list[AnalysisOut])
@@ -117,7 +122,7 @@ def list_vehicle_counts(
             "movements": [movement_dict(r) for r in a.movements][:limit]}
 
 
-def _meta(a: Analysis) -> dict:
+def meta(a: Analysis) -> dict:
     return {
         "analysis_id": a.id,
         "video_id": a.video_id,
@@ -128,6 +133,9 @@ def _meta(a: Analysis) -> dict:
         "vehicle_types": a.config.get("vehicle_types"),
         "tracker": a.config.get("tracker"),
         "time_bin_seconds": a.config.get("time_bin_seconds"),
+        "count_rule": a.config.get("count_rule"),
+        "speed": a.config.get("speed"),
+        "processing": (a.summary or {}).get("processing"),
         "regions": [{"id": r["id"], "name": r["name"], "kind": r["kind"], "role": r.get("role")}
                     for r in a.config.get("regions", [])],
     }
@@ -146,14 +154,14 @@ def export(
     lines = [line_dict(r) for r in a.line_crossings]
     moves = [movement_dict(r) for r in a.movements]
     stem = f"{Path(a.video.original_name).stem}_{a.id[:8]}"
-    meta = _meta(a)
+    info = meta(a)
     if format == "json":
-        body, mime, ext = exporters.to_json(meta, a.summary, zones, lines, moves), "application/json", "json"
+        body, mime, ext = exporters.to_json(info, a.summary, zones, lines, moves), "application/json", "json"
     elif format == "xlsx":
-        body = exporters.to_xlsx(meta, a.summary, zones, lines, moves)
+        body = exporters.to_xlsx(info, a.summary, zones, lines, moves)
         mime, ext = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
     elif format == "csv_bundle":
-        body, mime, ext = exporters.to_csv_zip(meta, a.summary, zones, lines, moves), "application/zip", "zip"
+        body, mime, ext = exporters.to_csv_zip(info, a.summary, zones, lines, moves), "application/zip", "zip"
     else:
         body, mime, ext = exporters.to_csv(zones), "text/csv", "csv"
     return Response(body, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})

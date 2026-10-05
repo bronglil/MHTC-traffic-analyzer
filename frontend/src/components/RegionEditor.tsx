@@ -4,9 +4,9 @@ import type { KonvaEventObject } from "konva/lib/Node";
 import type { Point, Region, RegionKind } from "../lib/api";
 import { regionColor } from "../lib/vehicles";
 
-/** "view": locked - nothing can be moved or drawn by accident. "select": edit shapes.
- *  "rect" / "polygon" / "line": drawing tools (like picking up a pen; one shape each). */
-export type EditorMode = "view" | "select" | "rect" | RegionKind;
+/** "select": click a shape to select it, drag it or its points to edit.
+ *  "rect" / "polygon" / "line": drawing tools. */
+export type EditorMode = "select" | "rect" | RegionKind;
 
 // Drawing feedback: translucent red, so the shape being drawn stands out from saved areas.
 const DRAW_STROKE = "#ef4444";
@@ -107,7 +107,6 @@ export default function RegionEditor({
   const handleStageClick = (e: KonvaEventObject<MouseEvent | TouchEvent>) => {
     const pos = e.target.getStage()?.getPointerPosition();
     if (!pos) return;
-    if (mode === "view") return;
     if (mode === "select") {
       if (e.target === e.target.getStage()) onSelect(null);
       return;
@@ -151,7 +150,7 @@ export default function RegionEditor({
   };
 
   const handleMove = (e: KonvaEventObject<MouseEvent>) => {
-    if (mode === "select" || mode === "view") return;
+    if (mode === "select") return;
     const pos = e.target.getStage()?.getPointerPosition();
     if (pos) setCursor(toNorm(pos.x, pos.y));
   };

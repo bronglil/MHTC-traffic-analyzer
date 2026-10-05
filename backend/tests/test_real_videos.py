@@ -24,6 +24,7 @@ from app.pipeline.classifier import create_refiner
 from app.pipeline.detector import MotionDetector
 from app.pipeline.engine import PipelineConfig, RegionDef, run_pipeline
 from app.pipeline.frames import probe
+from app.pipeline.speed import matching_buffer
 from app.pipeline.tracker import create_tracker
 from app.vehicles import ALL_VEHICLE_TYPES
 
@@ -85,7 +86,7 @@ def test_real_video_counts(spec_path, cfg, tracker_kind, stride):
     )
     result = run_pipeline(
         str(video), pcfg, _detector(cfg),
-        create_tracker(tracker_kind, info.fps / stride, cfg.get("confidence", 0.3)),
+        create_tracker(tracker_kind, info.fps / stride, cfg.get("confidence", 0.3), matching_buffer(stride, tracker_kind)),
         refiner=create_refiner(cfg.get("classification", "detector"), info.height),
     )
     tol = cfg.get("tolerance", 0)
