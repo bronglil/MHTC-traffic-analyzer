@@ -38,7 +38,16 @@ async function uploadJunction(page: Page) {
   await page.setInputFiles("input[type=file]", VIDEO);
   await page.waitForURL(/\/videos\//);
   await expect(page.locator("canvas").first()).toBeVisible();
-  await page.waitForTimeout(500); // let the overlay size to the video
+  // Wait until the overlay has sized itself to the 16:9 video and stopped resizing (slow machines).
+  let last = "";
+  await expect(async () => {
+    const box = (await page.locator("canvas").first().boundingBox())!;
+    const now = `${Math.round(box.width)}x${Math.round(box.height)}`;
+    const stable = now === last;
+    last = now;
+    expect(Math.abs(box.width / box.height - 640 / 360)).toBeLessThan(0.02);
+    expect(stable).toBe(true);
+  }).toPass({ intervals: [250], timeout: 15_000 });
 }
 
 test("counts only the two roads drawn, each under its own name and colour", async ({ page }) => {
