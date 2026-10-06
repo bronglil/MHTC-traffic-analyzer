@@ -6,7 +6,7 @@
 2. Detection          - detector boxes, class and confidence (before tracking)
 3. Tracking           - persistent track ids with motion trails
 4. Classification     - per-track vehicle type after refinement (e.g. truck→LGV2)
-5. ROI analysis       - which area(s) each vehicle's ground point is in
+5. ROI analysis       - which area(s) each vehicle's base meets, drawn in that area's colour
 6. Counting           - counting lines, direction of travel and running totals
 
 These are served live while an analysis runs and can be written as a 3x2
@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 
 from app.analysis.analyzer import LineSpec, TrafficAnalyzer, ZoneSpec
-from app.analysis.geometry import point_in_polygon
+from app.analysis.geometry import Point, point_in_polygon, regions_intersect
 from app.colors import REGION_COLORS, WHOLE_FRAME_COLOR, hex_to_bgr
 from app.pipeline.types import Detection, TrackedObject
 from app.vehicles import VEHICLE_LABELS
@@ -61,6 +61,44 @@ def zone_color(zone: ZoneSpec, i: int) -> tuple[int, int, int]:
 
 def line_color(line: LineSpec) -> tuple[int, int, int]:
     return hex_to_bgr(line.color) if line.color else (0, 0, 255)
+
+
+def contact_span(obj: TrackedObject, anchor: str) -> tuple[Point, Point]:
+    """The vehicle's base: the bottom edge, or the midline for an overhead camera."""
+    y = (obj.y1 + obj.y2) / 2.0 if anchor == "center" else obj.y2
+    return (obj.x1, y), (obj.x2, y)
+
+
+def clip_span(a: Point, b: Point, polygon: Sequence[Point]) -> tuple[Point, Point] | None:
+    """The part of segment ``a``–``b`` that lies on ``polygon``, or None."""
+    if not regions_intersect((a, b), polygon):
+        return None
+    ts = [0.0] if point_in_polygon(a, polygon) else []
+    if point_in_polygon(b, polygon):
+        ts.append(1.0)
+    ax, ay = a
+    bx, by = b
+    rx, ry = bx - ax, by - ay
+    n = len(polygon)
+    for i in range(n):
+        px, py = polygon[i]
+        qx, qy = polygon[(i + 1) % n]
+        sx, sy = qx - px, qy - py
+        den = rx * sy - ry * sx
+        if abs(den) < 1e-9:
+            continue
+        t = ((px - ax) * sy - (py - ay) * sx) / den
+        u = ((px - ax) * ry - (py - ay) * rx) / den
+        if -1e-9 <= t <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9:
+            ts.append(min(1.0, max(0.0, t)))
+    if not ts:
+        return a, b
+    t0, t1 = min(ts), max(ts)
+
+    def at(t: float) -> Point:
+        return (ax + rx * t, ay + ry * t)
+
+    return at(t0), at(t1)
 
 
 def track_color(track_id: int) -> tuple[int, int, int]:
@@ -104,6 +142,35 @@ class StageRenderer:
 
     def _pt(self, o: TrackedObject) -> tuple[float, float]:
         return o.bottom_center if self.anchor == "bottom_center" else o.center
+
+    def _draw_base(self, img: np.ndarray, o: TrackedObject, moving: bool | None = None) -> list[int]:
+        """Paint the vehicle's base in the colour of each road it meets.
+
+        The part of the base that is off every road stays white, so the picture
+        shows the same contact the count uses. Roads used as a movement
+        (in / out / both) are painted last, so their colour wins where two
+        roads overlap.
+        """
+        left, right = contact_span(o, self.anchor)
+        cv2.line(img, (int(left[0]), int(left[1])), (int(right[0]), int(right[1])), (255, 255, 255), 3, cv2.LINE_AA)
+        touched: list[int] = []
+        # No brightness change this frame: keep the bar black and white.
+        if moving is False:
+            cv2.line(img, (int(left[0]), int(left[1])), (int(right[0]), int(right[1])), (0, 0, 0), 1, cv2.LINE_AA)
+        order = sorted(range(len(self.zones)), key=lambda i: self.zones[i].role in ("in", "out", "both"))
+        for i in order:
+            zone = self.zones[i]
+            if zone.polygon is None:
+                continue
+            piece = clip_span(left, right, zone.polygon)
+            if piece is None:
+                continue
+            touched.append(i)
+            if moving is False:
+                continue
+            a, b = piece
+            cv2.line(img, (int(a[0]), int(a[1])), (int(b[0]), int(b[1])), zone_color(zone, i), 5, cv2.LINE_AA)
+        return touched
 
     def observe(self, frame_index: int, tracked: Sequence[TrackedObject]) -> None:
         """Call every processed frame so trails are continuous."""
@@ -185,13 +252,13 @@ class StageRenderer:
             _label(img, z.name, int(pts[0][0]), int(pts[0][1]) + 18, zone_color(self.zones[i], i))
         for o in classified:
             p = self._pt(o)
-            inside = [i for i, z in enumerate(self.zones) if z.polygon is not None and point_in_polygon(p, z.polygon)]
-            c = zone_color(self.zones[inside[0]], inside[0]) if inside else (255, 255, 255)
-            cv2.circle(img, (int(p[0]), int(p[1])), 6, c, -1)
-            cv2.circle(img, (int(p[0]), int(p[1])), 6, (0, 0, 0), 1)
+            moving = analyzer.pixel_moving(o.track_id)
+            inside = self._draw_base(img, o, moving)
+            c = (255, 255, 255) if moving is False else (zone_color(self.zones[inside[0]], inside[0]) if inside else (255, 255, 255))
             names = ",".join(self.zones[i].name for i in inside) or "-"
-            _label(img, f"#{o.track_id} in {names}", int(p[0]) + 8, int(p[1]), c, 0.4)
-        _panel_text(img, [f"{len(self.zones)} area(s), anchor: {self.anchor.replace('_', ' ')}"])
+            state = "" if moving is None else (" moving" if moving else " still")
+            _label(img, f"#{o.track_id} in {names}{state}", int(p[0]) + 8, int(p[1]), c, 0.4)
+        _panel_text(img, [f"{len(self.zones)} area(s), base: {'centre line' if self.anchor == 'center' else 'bottom edge'} · motion: black & white"])
         out["roi"] = img
 
         img = image.copy()
@@ -235,36 +302,48 @@ class StageRenderer:
             cv2.rectangle(img, (int(o.x1), int(o.y1)), (int(o.x2), int(o.y2)), c, 2)
             direction = analyzer.active_track_direction(o.track_id) or ""
             _label(img, f"#{o.track_id} {SHORT_LABELS.get(vtype, vtype)} {direction}".strip(), int(o.x1), int(o.y1), c)
-            p = self._pt(o)
-            inside = [i for i, z in enumerate(self.zones) if z.polygon is not None and point_in_polygon(p, z.polygon)]
-            if inside:
-                cv2.circle(img, (int(p[0]), int(p[1])), 5, zone_color(self.zones[inside[0]], inside[0]), -1)
+            self._draw_base(img, o, analyzer.pixel_moving(o.track_id))
         self._counts_panel(img, analyzer)
         return img
 
     def _counts_panel(self, img: np.ndarray, analyzer: TrafficAnalyzer) -> None:
         """Running totals per area/line with a colour swatch and per-type breakdown."""
         live = analyzer.live_breakdown()
-        rows: list[tuple[tuple[int, int, int], str]] = []
+        rows: list[tuple[list[tuple[int, int, int]], str]] = []
+        by_name = {z.name: i for i, z in enumerate(self.zones)}
         for i, z in enumerate(self.zones):
             b = live.get(z.id, {"total": 0, "by_type": {}})
             types = " ".join(f"{SHORT_LABELS.get(t, t)} {n}" for t, n in sorted(b["by_type"].items()))
-            rows.append((zone_color(z, i), f"{z.name}: {b['total']}" + (f"  ({types})" if types else "")))
+            rows.append(([zone_color(z, i)], f"{z.name}: {b['total']}" + (f"  ({types})" if types else "")))
         for ln in self.lines:
             b = live.get(ln.id, {"total": 0, "by_direction": {}})
             dirs = " ".join(f"{d} {n}" for d, n in sorted(b.get("by_direction", {}).items()))
-            rows.append((line_color(ln), f"{ln.name}: {b['total']}" + (f"  ({dirs})" if dirs else "")))
+            rows.append(([line_color(ln)], f"{ln.name}: {b['total']}" + (f"  ({dirs})" if dirs else "")))
+        moves = sorted(
+            (b for k, b in live.items() if k.startswith("mv:")),
+            key=lambda b: (b.get("from", ""), b.get("to", "")),
+        )
+        for b in moves:
+            def swatch(name: str) -> tuple[int, int, int]:
+                i = by_name.get(name)
+                return zone_color(self.zones[i], i) if i is not None else (255, 255, 255)
+
+            rows.append(([swatch(b.get("from", "")), swatch(b.get("to", ""))],
+                         f"{b.get('from', '')} → {b.get('to', '')}: {b['total']}"))
         if not rows:
             return
         scale, line_h = 0.5, 22
-        w = max(cv2.getTextSize(t, FONT, scale, 1)[0][0] for _, t in rows) + 34
+        w = max(cv2.getTextSize(t, FONT, scale, 1)[0][0] for _, t in rows) + 28 + 12 * max(len(c) for c, _ in rows)
         overlay = img.copy()
         cv2.rectangle(overlay, (6, 6), (6 + w, 12 + line_h * len(rows)), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.65, img, 0.35, 0, img)
-        for i, (color, text) in enumerate(rows):
+        for i, (colors, text) in enumerate(rows):
             y = 6 + line_h * (i + 1)
-            cv2.rectangle(img, (13, y - 11), (25, y + 1), color, -1)
-            cv2.putText(img, text, (31, y), FONT, scale, (255, 255, 255), 1, cv2.LINE_AA)
+            x = 13
+            for color in colors:
+                cv2.rectangle(img, (x, y - 11), (x + 10, y + 1), color, -1)
+                x += 12
+            cv2.putText(img, text, (x + 4, y), FONT, scale, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def compose_grid(stages: dict[str, np.ndarray], tile_size: tuple[int, int]) -> np.ndarray:

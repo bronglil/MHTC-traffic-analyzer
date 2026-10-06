@@ -7,7 +7,7 @@ const DESCRIPTIONS: Record<string, string> = {
   detection: "Raw detector boxes with class & confidence",
   tracking: "Persistent IDs and motion trails",
   classification: "Per-track type after refinement (e.g. HGV>LGV2)",
-  roi: "Which area each vehicle's ground point is in",
+  roi: "Which area the base is on. A black-and-white bar means the frame did not move there",
   counting: "Lines, direction of travel and running totals",
 };
 

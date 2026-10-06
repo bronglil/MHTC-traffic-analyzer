@@ -298,6 +298,62 @@ def test_track_confirmed_late_after_driving_into_view_counts_as_entering():
     assert [c.track_id for c in a.zone_counts if c.zone_id == "top"] == [1]
 
 
+def test_crossing_counts_a_car_whose_body_crosses_the_area_but_whose_anchor_misses():
+    """The wheel point can stay just outside a drawn road while the car itself crosses it."""
+    road = ZoneSpec("slip", "Slip", ((100, 40), (140, 40), (140, 70), (100, 70)))
+    a = TrafficAnalyzer((300, 150), [road], count_rule="crossing", track_timeout_frames=3)
+    for f in range(20):
+        y = 20 + f * 5  # bottom-centre x=90, left of the area; the box reaches x=110
+        a.update(f, f / 10, [TrackedObject(1, 70, y - 16, 110, y, 0.9, "car")])
+    a.finish()
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+    # The next lane stops short of the area, so it is not counted.
+    b = TrafficAnalyzer((300, 150), [road], count_rule="crossing", track_timeout_frames=3)
+    for f in range(20):
+        y = 20 + f * 5
+        b.update(f, f / 10, [TrackedObject(2, 50, y - 16, 95, y, 0.9, "car")])
+    b.finish()
+    assert b.zone_counts == []
+
+
+def test_crossing_counts_a_wide_car_that_jumps_a_small_area_between_samples():
+    road = ZoneSpec("slip", "Slip", ((100, 40), (140, 40), (140, 70), (100, 70)))
+    a = TrafficAnalyzer((300, 150), [road], count_rule="crossing", track_timeout_frames=3)
+    a.update(0, 0.0, [TrackedObject(1, 70, 14, 110, 30, 0.9, "car")])  # above the area
+    a.update(5, 0.5, [TrackedObject(1, 70, 64, 110, 80, 0.9, "car")])  # below it; the point at x=90 never enters
+    a.finish()
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+
+def test_crossing_counts_a_road_lying_inside_the_swept_base():
+    """A small road in the middle of the jump, clear of the point and of the diagonals."""
+    road = ZoneSpec("slip", "Slip", ((70, 60), (90, 60), (90, 75), (70, 75)))
+    a = TrafficAnalyzer((400, 200), [road], count_rule="crossing", track_timeout_frames=3)
+    a.update(0, 0.0, [TrackedObject(1, 50, 14, 250, 30, 0.9, "car")])
+    a.update(5, 0.5, [TrackedObject(1, 50, 94, 250, 110, 0.9, "car")])
+    a.finish()
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+
+def test_black_and_white_stillness_drops_a_drifting_box():
+    a = TrafficAnalyzer((200, 100), [WHOLE], count_rule="present", track_timeout_frames=3)
+    for f in range(12):
+        a.update(f, f / 10, [obj(1, 20 + f * 4, 50)])
+        a.note_motion(1, False)
+    a.finish()
+    assert a.zone_counts == []
+
+
+def test_black_and_white_change_keeps_a_moving_vehicle():
+    a = TrafficAnalyzer((200, 100), [WHOLE], count_rule="present", track_timeout_frames=3)
+    for f in range(12):
+        a.update(f, f / 10, [obj(1, 20 + f * 4, 50)])
+        a.note_motion(1, True)
+    a.finish()
+    assert [c.track_id for c in a.zone_counts] == [1]
+
+
 def test_unknown_count_rule_rejected():
     import pytest
 

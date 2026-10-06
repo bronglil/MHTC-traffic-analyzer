@@ -51,6 +51,51 @@ def segments_intersect(p1: Point, p2: Point, q1: Point, q2: Point) -> bool:
     )
 
 
+def convex_hull(points: Sequence[Point]) -> list[Point]:
+    """Convex hull of ``points``, in boundary order. Fewer than three points come back as is."""
+    uniq = sorted(set(points))
+    if len(uniq) <= 2:
+        return uniq
+
+    def chain(seq: Sequence[Point]) -> list[Point]:
+        hull: list[Point] = []
+        for p in seq:
+            while len(hull) >= 2 and cross(hull[-2], hull[-1], p) <= 0:
+                hull.pop()
+            hull.append(p)
+        return hull
+
+    lower = chain(uniq)
+    upper = chain(list(reversed(uniq)))
+    return lower[:-1] + upper[:-1]
+
+
+def regions_intersect(a: Sequence[Point], b: Sequence[Point]) -> bool:
+    """True when two regions meet: a segment, a polygon, or one of each.
+
+    A segment is given as two points. Used for the vehicle's road contact and
+    for the patch that contact sweeps between two samples.
+    """
+    if len(a) < 2 or len(b) < 2:
+        return False
+    if len(b) >= 3 and any(point_in_polygon(p, b) for p in a):
+        return True
+    if len(a) >= 3 and any(point_in_polygon(p, a) for p in b):
+        return True
+    na, nb = len(a), len(b)
+    for i in range(na):
+        a2 = a[(i + 1) % na]
+        if a2 == a[i]:
+            continue
+        for j in range(nb):
+            b2 = b[(j + 1) % nb]
+            if b2 == b[j]:
+                continue
+            if segments_intersect(a[i], a2, b[j], b2):
+                return True
+    return False
+
+
 def side_of_line(pt: Point, a: Point, b: Point) -> int:
     """+1 / -1 for the two sides of line a->b, 0 when on the line."""
     c = cross(a, b, pt)
