@@ -7,8 +7,12 @@ records. Counting rules:
   how many frames it appears in or whether it briefly leaves and re-enters.
   It counts when it **passes through** the zone (seen outside, then inside —
   or jumping across it between two samples — then outside again), however
-  briefly; otherwise it must stay inside for ``min_frames_in_zone`` processed
-  frames, which suppresses flicker and false positives.
+  briefly. "Inside" means the vehicle's bottom face meets the area. An ordinary
+  detector does not predict that face, so it is taken as the bottom edge of the
+  box (the whole edge, not one point on it). Between samples the count uses the
+  patch that edge sweeps, so a skipped frame cannot jump a drawn road. Otherwise
+  it must stay inside for ``min_frames_in_zone`` processed frames, which
+  suppresses flicker and false positives.
 * A track is counted **at most once per counting line**, on its first crossing.
 * The vehicle type of a track is resolved by confidence-weighted majority vote
   over all its detections, so a single misclassified frame does not change it.
@@ -17,7 +21,9 @@ records. Counting rules:
   independent counting event.
 * Tracks that never travel more than ``min_direction_displacement`` (parked
   vehicles, static false detections) are not counted unless
-  ``count_stationary`` is set.
+  ``count_stationary`` is set. When frames are supplied, the black-and-white
+  picture along the base also has to change at least once, so a box that
+  drifts over a still object is not counted.
 * A vehicle briefly hidden behind a sign, lamp post or another vehicle often
   comes back with a new tracker id; it is re-linked to its earlier track (see
   ``relink_gap_frames``) so it is still counted once.
@@ -37,8 +43,10 @@ from dataclasses import dataclass, field
 from app.analysis.geometry import (
     Point,
     compass_direction,
+    convex_hull,
     line_chord,
     point_in_polygon,
+    regions_intersect,
     segments_intersect,
     side_of_line,
 )
@@ -155,6 +163,14 @@ class _TrackState:
     max_travel: float = 0.0  # furthest distance from the first position (pixels)
     at_border: bool = False  # last box touched the picture edge (vehicle driving out of view)
     last_point: Point | None = None
+    # Previous road-contact segment (the vehicle's width on the road), so a car
+    # that jumps a small area between samples is still seen to cross it.
+    last_span: tuple[Point, Point] | None = None
+    # Black-and-white frame difference along the base. Samples stay 0 when no
+    # frames were supplied (tests, and the first analysed frame).
+    motion_samples: int = 0
+    motion_hits: int = 0
+    moving_now: bool = False
     # Recent (frame, point) samples, used to predict where a lost vehicle went.
     recent: deque[tuple[int, Point]] = field(default_factory=lambda: deque(maxlen=8))
     visits: dict[str, _ZoneVisit] = field(default_factory=dict)
@@ -284,13 +300,17 @@ class TrafficAnalyzer:
             edge = self._touches_border(obj)
             st.at_border = edge
             for zone in self.zones:
-                inside = zone.polygon is None or point_in_polygon(pt, zone.polygon)
+                inside = zone.polygon is None or self._on_area(obj, zone.polygon)
                 visit = st.visits.get(zone.id)
                 if inside:
                     if visit is None:
                         visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, pt)
-                        # From outside the area - or into view through the picture edge.
-                        visit.entered_from_outside = prev is not None or edge or at_start
+                        # From outside the area, into view through the picture edge, or
+                        # straddling the boundary (part of the car still outside it).
+                        visit.entered_from_outside = (
+                            prev is not None or edge or at_start
+                            or (zone.polygon is not None and self._straddling(obj, zone.polygon))
+                        )
                         visit.outside_before = prev if prev is not None else pt
                     visit.frames += 1
                     visit.last_frame = frame_index
@@ -303,7 +323,7 @@ class TrafficAnalyzer:
                     if visit.outside_before is not None:
                         d = ((pt[0] - visit.outside_before[0]) ** 2 + (pt[1] - visit.outside_before[1]) ** 2) ** 0.5
                         visit.traversal = max(visit.traversal, d)
-                elif prev is not None and _segment_crosses(prev, pt, zone.polygon):
+                elif prev is not None and self._crossed_between(st, obj, zone.polygon):
                     # Fast vehicle (or frame stride) jumped right across the area between samples.
                     visit = st.visits[zone.id] = _ZoneVisit(frame_index, timestamp, prev, frame_index, timestamp, pt)
                     visit.entered_from_outside = visit.left = True
@@ -322,8 +342,43 @@ class TrafficAnalyzer:
                             # the right-hand side of a->b as seen on screen.
                             st.crossings[line.id] = (frame_index, timestamp, s_now > 0)
             st.last_point = pt
+            st.last_span = self._contact_span(obj)
 
         self._expire(frame_index)
+
+    def _contact_span(self, obj: TrackedObject) -> tuple[Point, Point]:
+        """The vehicle's width where it meets the road: the bottom edge, or the
+        midline when the anchor is the box centre."""
+        y = (obj.y1 + obj.y2) / 2.0 if self.anchor == "center" else obj.y2
+        return (obj.x1, y), (obj.x2, y)
+
+    def _on_area(self, obj: TrackedObject, polygon: Sequence[Point]) -> bool:
+        """True when the vehicle's bottom face meets the drawn area.
+
+        The latest roadside measurements put the vehicle on the road at its
+        base, not at the centre of the box and not across the whole box (the
+        roof hangs over the next lane). The detector only gives that base as
+        the bottom edge, so the whole edge is tested, not one point on it.
+        """
+        left, right = self._contact_span(obj)
+        return regions_intersect((left, right), polygon)
+
+    def _straddling(self, obj: TrackedObject, polygon: Sequence[Point]) -> bool:
+        """Part of the road contact is on the area and part is still outside it."""
+        left, right = self._contact_span(obj)
+        flags = [point_in_polygon(p, polygon) for p in (left, self._anchor(obj), right)]
+        if any(flags) and not all(flags):
+            return True
+        return not any(flags) and _segment_crosses(left, right, polygon)
+
+    def _crossed_between(self, st: _TrackState, obj: TrackedObject, polygon: Sequence[Point]) -> bool:
+        """The vehicle was outside the area on both samples, but its base swept across it."""
+        if st.last_span is None:
+            return False
+        left, right = self._contact_span(obj)
+        prev_left, prev_right = st.last_span
+        swept = convex_hull((prev_left, prev_right, left, right))
+        return regions_intersect(swept, polygon)
 
     def _came_into_view(self, st: _TrackState, now: Point) -> None:
         """A few samples into a track: if its first box, moved back along the track's
@@ -460,8 +515,32 @@ class TrafficAnalyzer:
         missing = (0.0 if visit.entered_from_outside else max(0.0, -t0)) + (0.0 if visit.left else max(0.0, t1 - dist))
         return missing <= (1 - CROSSING_COVERAGE) * span
 
+    def note_motion(self, track_id: int, changed: bool) -> None:
+        """Record whether the black-and-white frame changed along this vehicle's base."""
+        st = self._tracks.get(self._alias.get(track_id, track_id))
+        if st is None:
+            return
+        st.motion_samples += 1
+        st.moving_now = changed
+        if changed:
+            st.motion_hits += 1
+
+    def pixel_moving(self, track_id: int) -> bool | None:
+        """This frame's black-and-white result, or None when no frame was compared."""
+        st = self._tracks.get(self._alias.get(track_id, track_id))
+        if st is None or st.motion_samples == 0:
+            return None
+        return st.moving_now
+
     def _moved(self, st: _TrackState) -> bool:
-        return self.count_stationary or st.max_travel >= self.min_disp
+        if self.count_stationary:
+            return True
+        if st.max_travel < self.min_disp:
+            return False
+        # No frames supplied: the box travel stands. With frames, the picture
+        # itself has to change at least once, so a drifting box on a still
+        # object is not counted.
+        return st.motion_samples == 0 or st.motion_hits > 0
 
     def _finalize(self, st: _TrackState) -> None:
         if not st.hits:

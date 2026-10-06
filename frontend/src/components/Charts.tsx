@@ -61,7 +61,7 @@ function Breakdown({ label, byType, types }: { label: string; byType: Record<str
 }
 
 /** Horizontal stacked bars: one row per entity, segments per vehicle type. */
-export function StackedBars({ rows }: { rows: { name: string; by_type: Record<string, number> }[] }) {
+export function StackedBars({ rows }: { rows: { name: string; by_type: Record<string, number>; swatches?: string[] }[] }) {
   const [tip, setTip] = useState<TooltipState | null>(null);
   const types = presentTypes(rows);
   const max = Math.max(1, ...rows.map((r) => Object.values(r.by_type).reduce((a, b) => a + b, 0)));
@@ -72,8 +72,13 @@ export function StackedBars({ rows }: { rows: { name: string; by_type: Record<st
         {rows.map((r) => {
           const total = types.reduce((s, t) => s + (r.by_type[t] ?? 0), 0);
           return (
-            <div key={r.name} className="grid grid-cols-[minmax(6rem,10rem)_1fr_3rem] items-center gap-3 text-sm">
-              <span className="truncate text-ink-2" title={r.name}>{r.name}</span>
+            <div key={r.name} className="grid grid-cols-[minmax(8rem,14rem)_1fr_3rem] items-center gap-3 text-sm">
+              <span className="flex min-w-0 items-center gap-1.5 text-ink-2" title={r.name}>
+                {r.swatches?.map((c, i) => (
+                  <span key={i} className="h-3 w-3 shrink-0 rounded-sm" style={{ background: c }} />
+                ))}
+                <span className="truncate">{r.name}</span>
+              </span>
               <div
                 className="flex h-5 cursor-default gap-[2px]"
                 style={{ width: `${(total / max) * 100}%` }}

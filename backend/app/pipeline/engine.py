@@ -20,6 +20,7 @@ from app.pipeline.classifier import ClassRefiner, PassThroughRefiner
 from app.pipeline.detector import Detector, MotionDetector
 from app.pipeline.enhance import LowLightEnhancer
 from app.pipeline.frames import iter_frames, probe
+from app.pipeline.motion import base_changed, to_gray
 from app.pipeline.tracker import Tracker
 
 
@@ -143,6 +144,7 @@ def run_pipeline(
     started = time.monotonic()
     last_report = last_stage = float("-inf")
     processed = 0
+    prev_gray: np.ndarray | None = None
     start_f = max(0, int(round(config.start_seconds * info.fps)))
     end_f = int(round(config.end_seconds * info.fps)) if config.end_seconds else None
     if info.frame_count:
@@ -157,6 +159,11 @@ def run_pipeline(
             tracked = tracker.update(detections, frame.image)         # Tracking
             classified = refiner.refine(tracked, frame.image)         # Classification
             analyzer.update(frame.index, frame.timestamp, classified)  # ROI analysis + counting
+            gray = to_gray(frame.image)
+            if prev_gray is not None:
+                for obj in classified:
+                    analyzer.note_motion(obj.track_id, base_changed(prev_gray, gray, obj, config.anchor))
+            prev_gray = gray
             renderer.observe(frame.index, tracked)
             processed += 1
 

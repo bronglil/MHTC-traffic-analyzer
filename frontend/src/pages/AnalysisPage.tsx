@@ -7,7 +7,7 @@ import { SPEED_LABELS } from "../components/SettingsForm";
 import StatusBadge from "../components/StatusBadge";
 import { countEntries } from "../lib/counts";
 import { api, formatDuration, type Analysis, type Summary, type TimeRow } from "../lib/api";
-import { DIRECTION_ORDER, VEHICLE_LABELS, VEHICLE_TYPES, directionLabel, vehicleColor } from "../lib/vehicles";
+import { DIRECTION_ORDER, VEHICLE_LABELS, VEHICLE_TYPES, directionLabel, regionColor, vehicleColor } from "../lib/vehicles";
 
 const ACTIVE = new Set(["queued", "running"]);
 
@@ -170,6 +170,13 @@ function ExportButtons({ analysis }: { analysis: Analysis }) {
       )}
     </div>
   );
+}
+
+function roadColor(analysis: Analysis, name: string): string {
+  const regions = analysis.config.regions ?? [];
+  const i = regions.findIndex((r) => r.name === name);
+  if (i < 0) return "#94a3b8";
+  return regions[i].color || regionColor(i);
 }
 
 function Tile({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
@@ -361,7 +368,11 @@ function Dashboard({ analysis, summary }: { analysis: Analysis; summary: Summary
       {tab === "movements" && (
         <section className="card p-4">
           <h2 className="mb-3 font-semibold">Movements (from road → to road)</h2>
-          <StackedBars rows={movements.map((m) => ({ name: `${m.from} → ${m.to}`, by_type: pick(m.by_type) }))} />
+          <StackedBars rows={movements.map((m) => ({
+            name: `${m.from} → ${m.to}`,
+            by_type: pick(m.by_type),
+            swatches: [roadColor(analysis, m.from), roadColor(analysis, m.to)],
+          }))} />
         </section>
       )}
 
